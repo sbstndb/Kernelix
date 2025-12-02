@@ -1,5 +1,6 @@
 #include <kernelix/kernelix.hpp>
 #include <iostream>
+#include <chrono>
 
 using namespace kernelix;
 
@@ -7,49 +8,73 @@ int main() {
     std::cout << "Kernelix v" << Version::string << " - Fused Linear Example" << std::endl;
     std::cout << "=======================================================" << std::endl;
 
-    // Simulating a transformer-like layer
+    // Simulating a simple MLP layer
     constexpr std::size_t batch_size = 32;
-    constexpr std::size_t hidden_dim = 4096;
+    constexpr std::size_t input_dim = 512;
+    constexpr std::size_t hidden_dim = 1024;
+    constexpr std::size_t output_dim = 512;
 
-    Tensor<float, batch_size, hidden_dim> x;
-    Tensor<float, hidden_dim, hidden_dim> W_q, W_k, W_v;
-    Tensor<float, hidden_dim> bias_q, bias_k, bias_v;
+    // Input and weights
+    Tensor<float, batch_size, input_dim> x;
+    Tensor<float, input_dim, hidden_dim> W1;
+    Tensor<float, hidden_dim> bias1;
+    Tensor<float, hidden_dim, output_dim> W2;
+    Tensor<float, output_dim> bias2;
 
-    // Initialize
+    // Initialize with simple values
     x.fill(0.1f);
-    W_q.fill(0.01f);
-    W_k.fill(0.01f);
-    W_v.fill(0.01f);
-    bias_q.fill(0.0f);
-    bias_k.fill(0.0f);
-    bias_v.fill(0.0f);
+    W1.fill(0.01f);
+    bias1.fill(0.0f);
+    W2.fill(0.01f);
+    bias2.fill(0.0f);
 
-    // Build expression tree for Q, K, V projections
-    // In a full implementation, these would be fused automatically
-    auto Q = linear(x, W_q, bias_q);
-    auto K = linear(x, W_k, bias_k);
-    auto V = linear(x, W_v, bias_v);
+    // Intermediate and output buffers
+    Tensor<float, batch_size, hidden_dim> hidden;
+    Tensor<float, batch_size, output_dim> output;
 
-    std::cout << "Created QKV projection expressions" << std::endl;
-    std::cout << "Input shape: " << batch_size << " x " << hidden_dim << std::endl;
-    std::cout << "Weight shapes: " << hidden_dim << " x " << hidden_dim << std::endl;
+    std::cout << "\nNetwork architecture:" << std::endl;
+    std::cout << "  Input:  " << batch_size << " x " << input_dim << std::endl;
+    std::cout << "  Hidden: " << batch_size << " x " << hidden_dim << " (ReLU)" << std::endl;
+    std::cout << "  Output: " << batch_size << " x " << output_dim << std::endl;
 
-    // Expression with activation (SwiGLU-like pattern)
-    Tensor<float, hidden_dim, hidden_dim * 4> W_gate, W_up;
-    Tensor<float, hidden_dim * 4, hidden_dim> W_down;
-    W_gate.fill(0.01f);
-    W_up.fill(0.01f);
-    W_down.fill(0.01f);
+    // Layer 1: Linear + ReLU (fused)
+    std::cout << "\nExecuting Layer 1 (Linear + ReLU)..." << std::endl;
+    auto layer1_expr = relu(linear(x, W1, bias1));
 
-    // SwiGLU: silu(x @ W_gate) * (x @ W_up) @ W_down
-    auto gate_out = silu(linear(x, W_gate));
-    auto up_out = linear(x, W_up);
-    // Note: elementwise multiplication would be: gate_out * up_out
-    // Then: linear(gate_out * up_out, W_down)
+    auto start = std::chrono::high_resolution_clock::now();
+    eval(layer1_expr, hidden.data());
+    auto end = std::chrono::high_resolution_clock::now();
 
-    std::cout << "Created SwiGLU-like FFN expressions" << std::endl;
+    double layer1_ms = std::chrono::duration<double, std::milli>(end - start).count();
+    std::cout << "  Time: " << layer1_ms << " ms" << std::endl;
 
-    std::cout << "=======================================================" << std::endl;
+    // Layer 2: Linear
+    std::cout << "\nExecuting Layer 2 (Linear)..." << std::endl;
+    auto layer2_expr = linear(hidden, W2, bias2);
+
+    start = std::chrono::high_resolution_clock::now();
+    eval(layer2_expr, output.data());
+    end = std::chrono::high_resolution_clock::now();
+
+    double layer2_ms = std::chrono::duration<double, std::milli>(end - start).count();
+    std::cout << "  Time: " << layer2_ms << " ms" << std::endl;
+
+    // Total time
+    double total_ms = layer1_ms + layer2_ms;
+    std::cout << "\nTotal forward pass: " << total_ms << " ms" << std::endl;
+
+    // Calculate total FLOPs
+    std::size_t layer1_flops = 2 * batch_size * input_dim * hidden_dim;
+    std::size_t layer2_flops = 2 * batch_size * hidden_dim * output_dim;
+    double total_gflops = (layer1_flops + layer2_flops) / (total_ms * 1e6);
+    std::cout << "Throughput: " << total_gflops << " GFLOPS" << std::endl;
+
+    // Verify output is reasonable (should be positive due to ReLU in layer 1)
+    std::cout << "\nSample outputs:" << std::endl;
+    std::cout << "  hidden[0,0]: " << hidden(0, 0) << " (should be >= 0)" << std::endl;
+    std::cout << "  output[0,0]: " << output(0, 0) << std::endl;
+
+    std::cout << "\n=======================================================" << std::endl;
     std::cout << "Example completed successfully!" << std::endl;
 
     return 0;

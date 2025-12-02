@@ -15,15 +15,15 @@
 /// Tensor<float, 4096, 4096> W;
 /// Tensor<float, 32, 4096> output;
 ///
-/// auto result = linear(rmsnorm(x), W);
+/// auto result = linear(x, W);
 /// eval(result, output.data());
 /// @endcode
 
 // Version information
 #define KERNELIX_VERSION_MAJOR 0
-#define KERNELIX_VERSION_MINOR 1
+#define KERNELIX_VERSION_MINOR 2
 #define KERNELIX_VERSION_PATCH 0
-#define KERNELIX_VERSION_STRING "0.1.0"
+#define KERNELIX_VERSION_STRING "0.2.0"
 
 // Core components
 #include "core/types.hpp"
@@ -37,10 +37,19 @@
 #include "expr/unary.hpp"
 #include "expr/contraction.hpp"
 
+// Traits system
+#include "traits/expr_traits.hpp"
+
 // Utilities
 #include "util/simd.hpp"
 #include "util/memory.hpp"
 #include "util/parallel.hpp"
+
+// Kernels and evaluator
+#include "kernel/gemm/micro_kernel.hpp"
+#include "kernel/gemm/pack.hpp"
+#include "kernel/gemm/impl.hpp"
+#include "kernel/evaluator.hpp"
 
 namespace kernelix {
 
@@ -53,7 +62,7 @@ struct Version {
 };
 
 // ============================================================================
-// API Functions (basic implementations - to be expanded)
+// API Functions
 // ============================================================================
 
 /// Create GEMM expression: C = A @ B
@@ -112,28 +121,68 @@ auto gelu(E&& expr) {
 
 /// Tanh activation
 template<typename E>
-auto tanh(E&& expr) {
+auto tanh_act(E&& expr) {
     return expr::make_tanh(std::forward<E>(expr));
 }
 
 // ============================================================================
-// Evaluation (placeholder - full implementation in kernel module)
+// Evaluation
 // ============================================================================
 
 /// Evaluate expression and write result to output pointer
 template<typename Expr, typename T>
 void eval(const Expr& expr, T* output) {
-    // TODO: Implement full evaluation pipeline
-    // This will dispatch to appropriate kernel based on expression type
-    (void)expr;
-    (void)output;
+    kernel::Evaluator<std::remove_cvref_t<Expr>>::run(expr, output);
 }
 
-/// Evaluate expression and return result tensor
+/// Evaluate expression and return result in a new tensor (static dimensions)
 template<typename Expr>
 auto compute(const Expr& expr) {
-    // TODO: Implement with automatic output allocation
-    (void)expr;
+    using ExprType = std::remove_cvref_t<Expr>;
+    using Traits = traits::ExprTraits<ExprType>;
+    using T = typename Traits::value_type;
+
+    // Create output tensor with correct shape
+    if constexpr (Traits::rank == 2) {
+        constexpr auto shape = Traits::output_shape;
+        Tensor<T, shape[0], shape[1]> result;
+        eval(expr, result.data());
+        return result;
+    } else if constexpr (Traits::rank == 1) {
+        constexpr auto shape = Traits::output_shape;
+        Tensor<T, shape[0]> result;
+        eval(expr, result.data());
+        return result;
+    } else if constexpr (Traits::rank == 0) {
+        T result;
+        eval(expr, &result);
+        return result;
+    }
 }
+
+// ============================================================================
+// Expression Info (for debugging/introspection)
+// ============================================================================
+
+/// Get compile-time info about an expression
+template<typename Expr>
+struct ExprInfo {
+    using Traits = traits::ExprTraits<std::remove_cvref_t<Expr>>;
+
+    static constexpr std::size_t rank = Traits::rank;
+    static constexpr auto output_shape = Traits::output_shape;
+    static constexpr std::size_t output_size = Traits::output_size;
+    static constexpr bool is_terminal = Traits::is_terminal;
+
+    // GEMM-specific info
+    template<typename E = Expr>
+    static constexpr std::size_t flops() {
+        if constexpr (requires { Traits::estimated_flops; }) {
+            return Traits::estimated_flops;
+        } else {
+            return 0;
+        }
+    }
+};
 
 } // namespace kernelix
