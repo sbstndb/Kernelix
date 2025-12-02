@@ -21,9 +21,9 @@
 
 // Version information
 #define KERNELIX_VERSION_MAJOR 0
-#define KERNELIX_VERSION_MINOR 2
+#define KERNELIX_VERSION_MINOR 3
 #define KERNELIX_VERSION_PATCH 0
-#define KERNELIX_VERSION_STRING "0.2.0"
+#define KERNELIX_VERSION_STRING "0.3.0"
 
 // Core components
 #include "core/types.hpp"
@@ -36,6 +36,7 @@
 #include "expr/binary.hpp"
 #include "expr/unary.hpp"
 #include "expr/contraction.hpp"
+#include "expr/norm.hpp"
 
 // Traits system
 #include "traits/expr_traits.hpp"
@@ -123,6 +124,31 @@ auto gelu(E&& expr) {
 template<typename E>
 auto tanh_act(E&& expr) {
     return expr::make_tanh(std::forward<E>(expr));
+}
+
+// ============================================================================
+// Normalizations
+// ============================================================================
+
+/// RMSNorm: y = x * weight / sqrt(mean(x^2) + eps)
+/// Normalizes over the last dimension
+/// @param x Input tensor [batch, hidden_dim] or [seq_len, hidden_dim]
+/// @param weight Scale weights [hidden_dim]
+/// @param eps Small constant for numerical stability (default: 1e-6)
+template<TensorLike X, TensorLike Weight>
+auto rmsnorm(const X& x, const Weight& weight, float eps = 1e-6f) {
+    return expr::RMSNormExpr<const X&, const Weight&>(x, weight, eps);
+}
+
+/// LayerNorm: y = (x - mean) / sqrt(var + eps) * gamma + beta
+/// Normalizes over the last dimension
+/// @param x Input tensor [batch, hidden_dim] or [seq_len, hidden_dim]
+/// @param gamma Scale parameter [hidden_dim]
+/// @param beta Shift parameter [hidden_dim]
+/// @param eps Small constant for numerical stability (default: 1e-5)
+template<TensorLike X, TensorLike Gamma, TensorLike Beta>
+auto layernorm(const X& x, const Gamma& gamma, const Beta& beta, float eps = 1e-5f) {
+    return expr::LayerNormExpr<const X&, const Gamma&, const Beta&>(x, gamma, beta, eps);
 }
 
 // ============================================================================

@@ -407,6 +407,182 @@ void test_config() {
     std::cout << "PASSED" << std::endl;
 }
 
+void test_rmsnorm() {
+    std::cout << "Testing RMSNorm... ";
+
+    constexpr std::size_t batch = 2;
+    constexpr std::size_t hidden = 4;
+
+    // Input: simple values for manual verification
+    Tensor<float, batch, hidden> x = {1, 2, 3, 4, 5, 6, 7, 8};
+    Tensor<float, hidden> weight = {1, 1, 1, 1};  // Identity weight
+    Tensor<float, batch, hidden> output;
+
+    // RMSNorm formula: y = x * weight / sqrt(mean(x^2) + eps)
+    // Row 0: x = [1, 2, 3, 4], mean(x^2) = (1+4+9+16)/4 = 7.5, rms = sqrt(7.5) ≈ 2.739
+    // Row 1: x = [5, 6, 7, 8], mean(x^2) = (25+36+49+64)/4 = 43.5, rms = sqrt(43.5) ≈ 6.595
+
+    auto expr = rmsnorm(x, weight, 1e-6f);
+    eval(expr, output.data());
+
+    // Verify row 0
+    float rms0 = std::sqrt((1.0f + 4.0f + 9.0f + 16.0f) / 4.0f + 1e-6f);
+    assert(approx_equal(output(0, 0), 1.0f / rms0));
+    assert(approx_equal(output(0, 1), 2.0f / rms0));
+    assert(approx_equal(output(0, 2), 3.0f / rms0));
+    assert(approx_equal(output(0, 3), 4.0f / rms0));
+
+    // Verify row 1
+    float rms1 = std::sqrt((25.0f + 36.0f + 49.0f + 64.0f) / 4.0f + 1e-6f);
+    assert(approx_equal(output(1, 0), 5.0f / rms1));
+    assert(approx_equal(output(1, 1), 6.0f / rms1));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_rmsnorm_with_weight() {
+    std::cout << "Testing RMSNorm with weights... ";
+
+    constexpr std::size_t batch = 2;
+    constexpr std::size_t hidden = 4;
+
+    Tensor<float, batch, hidden> x = {1, 2, 3, 4, 5, 6, 7, 8};
+    Tensor<float, hidden> weight = {2, 2, 2, 2};  // Scale by 2
+    Tensor<float, batch, hidden> output;
+
+    eval(rmsnorm(x, weight), output.data());
+
+    // Result should be 2x the identity weight case
+    float rms0 = std::sqrt((1.0f + 4.0f + 9.0f + 16.0f) / 4.0f + 1e-6f);
+    assert(approx_equal(output(0, 0), 2.0f * 1.0f / rms0));
+    assert(approx_equal(output(0, 1), 2.0f * 2.0f / rms0));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_layernorm() {
+    std::cout << "Testing LayerNorm... ";
+
+    constexpr std::size_t batch = 2;
+    constexpr std::size_t hidden = 4;
+
+    // Simple test: input where mean=2.5 for each row
+    Tensor<float, batch, hidden> x = {1, 2, 3, 4, 1, 2, 3, 4};
+    Tensor<float, hidden> gamma = {1, 1, 1, 1};  // Identity scale
+    Tensor<float, hidden> beta = {0, 0, 0, 0};   // Zero shift
+    Tensor<float, batch, hidden> output;
+
+    // LayerNorm formula: y = (x - mean) / sqrt(var + eps) * gamma + beta
+    // Row mean = 2.5, var = ((1-2.5)^2 + (2-2.5)^2 + (3-2.5)^2 + (4-2.5)^2) / 4
+    //          = (2.25 + 0.25 + 0.25 + 2.25) / 4 = 1.25
+
+    auto expr = layernorm(x, gamma, beta, 1e-5f);
+    eval(expr, output.data());
+
+    float mean = 2.5f;
+    float var = 1.25f;
+    float inv_std = 1.0f / std::sqrt(var + 1e-5f);
+
+    // Verify row 0
+    assert(approx_equal(output(0, 0), (1.0f - mean) * inv_std));
+    assert(approx_equal(output(0, 1), (2.0f - mean) * inv_std));
+    assert(approx_equal(output(0, 2), (3.0f - mean) * inv_std));
+    assert(approx_equal(output(0, 3), (4.0f - mean) * inv_std));
+
+    // Row 1 should be identical to row 0
+    assert(approx_equal(output(1, 0), output(0, 0)));
+    assert(approx_equal(output(1, 3), output(0, 3)));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_layernorm_with_params() {
+    std::cout << "Testing LayerNorm with gamma/beta... ";
+
+    constexpr std::size_t batch = 1;
+    constexpr std::size_t hidden = 4;
+
+    Tensor<float, batch, hidden> x = {1, 2, 3, 4};
+    Tensor<float, hidden> gamma = {2, 2, 2, 2};  // Scale by 2
+    Tensor<float, hidden> beta = {1, 1, 1, 1};   // Shift by 1
+    Tensor<float, batch, hidden> output;
+
+    eval(layernorm(x, gamma, beta), output.data());
+
+    float mean = 2.5f;
+    float var = 1.25f;
+    float inv_std = 1.0f / std::sqrt(var + 1e-5f);
+
+    // y = (x - mean) * inv_std * gamma + beta
+    assert(approx_equal(output(0, 0), (1.0f - mean) * inv_std * 2.0f + 1.0f));
+    assert(approx_equal(output(0, 3), (4.0f - mean) * inv_std * 2.0f + 1.0f));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_rmsnorm_large() {
+    std::cout << "Testing RMSNorm (large)... ";
+
+    constexpr std::size_t batch = 32;
+    constexpr std::size_t hidden = 4096;
+
+    Tensor<float, batch, hidden> x;
+    Tensor<float, hidden> weight;
+    Tensor<float, batch, hidden> output;
+
+    // Initialize
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (auto& v : x) v = dist(rng);
+    for (auto& v : weight) v = dist(rng) * 0.1f + 1.0f;  // Around 1.0
+
+    auto start = std::chrono::high_resolution_clock::now();
+    eval(rmsnorm(x, weight), output.data());
+    auto end = std::chrono::high_resolution_clock::now();
+
+    double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+    // Verify one sample row
+    float sum_sq = 0;
+    for (std::size_t j = 0; j < hidden; ++j) {
+        sum_sq += x(0, j) * x(0, j);
+    }
+    float rms = std::sqrt(sum_sq / hidden + 1e-6f);
+    float expected = x(0, 0) / rms * weight[0];
+    assert(approx_equal(output(0, 0), expected, 1e-3f));
+
+    std::cout << "PASSED (" << time_ms << " ms)" << std::endl;
+}
+
+void test_fused_rmsnorm_linear() {
+    std::cout << "Testing fused RMSNorm + Linear... ";
+
+    constexpr std::size_t batch = 4;
+    constexpr std::size_t hidden_in = 8;
+    constexpr std::size_t hidden_out = 8;
+
+    Tensor<float, batch, hidden_in> x;
+    Tensor<float, hidden_in> norm_weight;
+    Tensor<float, hidden_in, hidden_out> linear_weight;
+    Tensor<float, batch, hidden_out> output;
+
+    // Initialize
+    x.fill(1.0f);
+    norm_weight.fill(1.0f);
+    linear_weight.fill(0.1f);
+
+    // Fused: linear(rmsnorm(x, w), W)
+    auto expr = linear(rmsnorm(x, norm_weight), linear_weight);
+    eval(expr, output.data());
+
+    // RMSNorm of all-ones: rms = 1.0, so normalized = 1.0
+    // Linear: each output = sum of 8 * 0.1 = 0.8
+    assert(approx_equal(output(0, 0), 0.8f, 1e-3f));
+    assert(approx_equal(output(batch-1, hidden_out-1), 0.8f, 1e-3f));
+
+    std::cout << "PASSED" << std::endl;
+}
+
 int main() {
     std::cout << "Kernelix v" << Version::string << " - Tests" << std::endl;
     std::cout << "=============================================" << std::endl;
@@ -435,6 +611,14 @@ int main() {
 
     // Fusion
     test_fused_gemm_relu();
+
+    // Normalizations
+    test_rmsnorm();
+    test_rmsnorm_with_weight();
+    test_layernorm();
+    test_layernorm_with_params();
+    test_rmsnorm_large();
+    test_fused_rmsnorm_linear();
 
     // API tests
     test_compute_returns_tensor();

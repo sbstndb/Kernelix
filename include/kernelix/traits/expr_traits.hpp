@@ -5,6 +5,7 @@
 #include "../expr/contraction.hpp"
 #include "../expr/unary.hpp"
 #include "../expr/binary.hpp"
+#include "../expr/norm.hpp"
 #include <array>
 #include <type_traits>
 
@@ -193,6 +194,62 @@ struct ExprTraits<expr::BinaryExpr<LHS, RHS, Op>> {
     static constexpr std::size_t rank = lhs_traits::rank;
     static constexpr auto output_shape = lhs_traits::output_shape;
     static constexpr std::size_t output_size = lhs_traits::output_size;
+
+    static constexpr bool is_memory_bound = true;
+    static constexpr bool allows_fusion = true;
+};
+
+/// Traits for RMSNorm expression
+/// Input: [batch, hidden_dim], Weight: [hidden_dim], Output: [batch, hidden_dim]
+template<typename Input, typename Weight>
+struct ExprTraits<expr::RMSNormExpr<Input, Weight>> {
+    using op_category = op_category::Normalization;
+    using value_type = value_type_t<Input>;
+    using input_traits = ExprTraits<std::remove_cvref_t<Input>>;
+
+    static constexpr bool is_expression = true;
+    static constexpr bool is_terminal = false;
+
+    // Output shape is same as input shape
+    static constexpr std::size_t rank = input_traits::rank;
+    static constexpr auto output_shape = input_traits::output_shape;
+    static constexpr std::size_t output_size = input_traits::output_size;
+
+    // For 2D input [batch, hidden_dim]
+    static constexpr std::size_t num_rows = (rank >= 1) ? output_shape[0] : 1;
+    static constexpr std::size_t hidden_dim = (rank >= 2) ? output_shape[1] : output_shape[0];
+
+    // Cost estimation: read input twice (sum_sq, normalize), read weight once, write output
+    static constexpr std::size_t estimated_flops = 3 * output_size;  // sq, div, mul
+    static constexpr std::size_t estimated_bytes = 3 * output_size * sizeof(value_type);
+
+    static constexpr bool is_memory_bound = true;
+    static constexpr bool allows_fusion = true;  // Can fuse with following Linear
+};
+
+/// Traits for LayerNorm expression
+/// Input: [batch, hidden_dim], Gamma/Beta: [hidden_dim], Output: [batch, hidden_dim]
+template<typename Input, typename Gamma, typename Beta>
+struct ExprTraits<expr::LayerNormExpr<Input, Gamma, Beta>> {
+    using op_category = op_category::Normalization;
+    using value_type = value_type_t<Input>;
+    using input_traits = ExprTraits<std::remove_cvref_t<Input>>;
+
+    static constexpr bool is_expression = true;
+    static constexpr bool is_terminal = false;
+
+    // Output shape is same as input shape
+    static constexpr std::size_t rank = input_traits::rank;
+    static constexpr auto output_shape = input_traits::output_shape;
+    static constexpr std::size_t output_size = input_traits::output_size;
+
+    // For 2D input [batch, hidden_dim]
+    static constexpr std::size_t num_rows = (rank >= 1) ? output_shape[0] : 1;
+    static constexpr std::size_t hidden_dim = (rank >= 2) ? output_shape[1] : output_shape[0];
+
+    // Cost estimation: read input 3x (mean, var, normalize), read gamma/beta, write output
+    static constexpr std::size_t estimated_flops = 5 * output_size;  // sub, sq, div, mul, add
+    static constexpr std::size_t estimated_bytes = 4 * output_size * sizeof(value_type);
 
     static constexpr bool is_memory_bound = true;
     static constexpr bool allows_fusion = true;
