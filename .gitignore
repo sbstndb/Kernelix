@@ -1,0 +1,53 @@
+# Build directories
+build/
+cmake-build-*/
+out/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Compiled files
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!cmake/*.cmake
+!cmake/*.cmake.in
+
+# Testing
+Testing/
+CTestTestfile.cmake
+
+# Package files
+*.tar.gz
+*.zip
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Profiling
+*.prof
+perf.data
+perf.data.old
+
+# Coverage
+*.gcno
+*.gcda
+*.gcov
+coverage/
