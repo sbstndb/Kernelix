@@ -21,9 +21,9 @@
 
 // Version information
 #define KERNELIX_VERSION_MAJOR 0
-#define KERNELIX_VERSION_MINOR 3
+#define KERNELIX_VERSION_MINOR 4
 #define KERNELIX_VERSION_PATCH 0
-#define KERNELIX_VERSION_STRING "0.3.0"
+#define KERNELIX_VERSION_STRING "0.4.0"
 
 // Core components
 #include "core/types.hpp"
@@ -90,10 +90,16 @@ auto dot(const A& a, const B& b) {
     return expr::DotExpr<const A&, const B&>(a, b);
 }
 
-/// Linear transformation: y = x @ W
+/// Linear transformation: y = x @ W (TensorLike inputs)
 template<TensorLike X, TensorLike W>
 auto linear(const X& x, const W& w) {
     return gemm(x, w);
+}
+
+/// Linear transformation: y = expr @ W (Expression as first input for fusion)
+template<ExprLike X, TensorLike W>
+auto linear(const X& x, const W& w) {
+    return expr::GemmExpr<const X&, const W&, void>(x, w);
 }
 
 /// Linear transformation with bias: y = x @ W + b
@@ -149,6 +155,14 @@ auto rmsnorm(const X& x, const Weight& weight, float eps = 1e-6f) {
 template<TensorLike X, TensorLike Gamma, TensorLike Beta>
 auto layernorm(const X& x, const Gamma& gamma, const Beta& beta, float eps = 1e-5f) {
     return expr::LayerNormExpr<const X&, const Gamma&, const Beta&>(x, gamma, beta, eps);
+}
+
+/// Softmax: softmax(x)_i = exp(x_i - max(x)) / sum(exp(x_j - max(x)))
+/// Applies softmax over the last dimension (numerically stable)
+/// @param x Input tensor [batch, dim] or [dim]
+template<TensorLike X>
+auto softmax(const X& x) {
+    return expr::SoftmaxExpr<const X&>(x);
 }
 
 // ============================================================================

@@ -23,6 +23,13 @@ struct GemmTileConfig {
     static constexpr std::size_t NR = MicroKernelConfig<T>::NR;
 };
 
+// Forward declarations
+template<typename T, std::size_t MR, std::size_t NR>
+void gemm_macro_kernel(const T*, const T*, T*, std::size_t, std::size_t, std::size_t, std::size_t);
+
+template<typename T, std::size_t MR, std::size_t NR>
+void gemm_edge_case(const T*, const T*, T*, std::size_t, std::size_t, std::size_t, std::size_t);
+
 /// Main GEMM implementation: C = A @ B
 /// A: [M x K], B: [K x N], C: [M x N], all row-major
 template<typename T>

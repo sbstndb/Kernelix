@@ -53,4 +53,24 @@ constexpr auto make_layernorm(Input&& input, Gamma&& gamma, Beta&& beta, float e
     };
 }
 
+/// Softmax expression: softmax(x)_i = exp(x_i - max(x)) / sum(exp(x_j - max(x)))
+/// Applies softmax over the last dimension (numerically stable version)
+template<typename Input>
+struct SoftmaxExpr : ExprBase {
+    using input_type = Input;
+
+    Input input;
+
+    constexpr explicit SoftmaxExpr(Input in)
+        : input(std::move(in)) {}
+};
+
+/// Helper to create Softmax expression
+template<typename Input>
+constexpr auto make_softmax(Input&& input) {
+    return SoftmaxExpr<std::decay_t<Input>>{
+        std::forward<Input>(input)
+    };
+}
+
 } // namespace kernelix::expr

@@ -8,6 +8,7 @@
 #include "gemm/impl.hpp"
 #include "norm/rmsnorm.hpp"
 #include "norm/layernorm.hpp"
+#include "norm/softmax.hpp"
 #include "../util/parallel.hpp"
 #include <cmath>
 #include <type_traits>
@@ -368,6 +369,35 @@ struct Evaluator<expr::LayerNormExpr<Input, Gamma, Beta>> {
         LayerNormKernel<T>::run(
             input_data, gamma_data, beta_data, output,
             num_rows, hidden_dim, static_cast<T>(e.eps)
+        );
+    }
+
+private:
+    template<typename E>
+    static const T* get_input_data(const E& expr) {
+        if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
+            return expr.data();
+        } else {
+            return expr.data();
+        }
+    }
+};
+
+/// Softmax evaluator
+template<typename Input>
+struct Evaluator<expr::SoftmaxExpr<Input>> {
+    using Traits = traits::ExprTraits<expr::SoftmaxExpr<Input>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::SoftmaxExpr<Input>& e, T* output) {
+        constexpr std::size_t num_rows = Traits::num_rows;
+        constexpr std::size_t softmax_dim = Traits::softmax_dim;
+
+        const T* input_data = get_input_data(e.input);
+
+        SoftmaxKernel<T>::run(
+            input_data, output,
+            num_rows, softmax_dim
         );
     }
 

@@ -1,14 +1,20 @@
 #pragma once
 
 #include "../core/config.hpp"
-#include <tbb/parallel_for.h>
-#include <tbb/parallel_reduce.h>
-#include <tbb/blocked_range.h>
-#include <tbb/blocked_range2d.h>
-#include <tbb/partitioner.h>
 #include <functional>
+#include <algorithm>
+
+#if defined(KERNELIX_HAS_TBB)
+    #include <tbb/parallel_for.h>
+    #include <tbb/parallel_reduce.h>
+    #include <tbb/blocked_range.h>
+    #include <tbb/blocked_range2d.h>
+    #include <tbb/partitioner.h>
+#endif
 
 namespace kernelix::parallel {
+
+#if defined(KERNELIX_HAS_TBB)
 
 /// 1D parallel for loop using TBB
 template<typename Func>
@@ -157,6 +163,73 @@ void parallel_for_blocked(std::size_t begin, std::size_t end, std::size_t block_
         }
     );
 }
+
+#else // Sequential fallback when TBB is not available
+
+/// 1D sequential for loop (fallback)
+template<typename Func>
+void parallel_for(std::size_t begin, std::size_t end, Func&& func) {
+    for (std::size_t i = begin; i < end; ++i) {
+        func(i);
+    }
+}
+
+/// 1D sequential for with grain size (ignored in sequential mode)
+template<typename Func>
+void parallel_for(std::size_t begin, std::size_t end, std::size_t /*grain_size*/, Func&& func) {
+    for (std::size_t i = begin; i < end; ++i) {
+        func(i);
+    }
+}
+
+/// 2D sequential for loop (fallback)
+template<typename Func>
+void parallel_for_2d(
+    std::size_t row_begin, std::size_t row_end,
+    std::size_t col_begin, std::size_t col_end,
+    Func&& func)
+{
+    for (std::size_t i = row_begin; i < row_end; ++i) {
+        for (std::size_t j = col_begin; j < col_end; ++j) {
+            func(i, j);
+        }
+    }
+}
+
+/// 2D sequential for with grain size (ignored in sequential mode)
+template<typename Func>
+void parallel_for_2d(
+    std::size_t row_begin, std::size_t row_end, std::size_t /*row_grain*/,
+    std::size_t col_begin, std::size_t col_end, std::size_t /*col_grain*/,
+    Func&& func)
+{
+    for (std::size_t i = row_begin; i < row_end; ++i) {
+        for (std::size_t j = col_begin; j < col_end; ++j) {
+            func(i, j);
+        }
+    }
+}
+
+/// Sequential reduction (fallback)
+template<typename T, typename Func, typename Reduce>
+T parallel_reduce(std::size_t begin, std::size_t end, T identity, Func&& func, Reduce&& reduce) {
+    T result = identity;
+    for (std::size_t i = begin; i < end; ++i) {
+        result = reduce(result, func(i));
+    }
+    return result;
+}
+
+/// Sequential for with blocked range (fallback)
+template<typename Func>
+void parallel_for_blocked(std::size_t begin, std::size_t end, std::size_t block_size, Func&& func) {
+    for (std::size_t block_start = begin; block_start < end; block_start += block_size) {
+        std::size_t block_end = std::min(block_start + block_size, end);
+        func(block_start, block_end);
+    }
+}
+
+#endif // KERNELIX_HAS_TBB
 
 /// Helper for tiled GEMM parallelization
 template<typename Func>

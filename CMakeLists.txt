@@ -33,8 +33,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Find Dependencies
 # -----------------------------------------------------------------------------
 
-# TBB (required)
-find_package(TBB REQUIRED)
+# TBB (optional - fallback to sequential if not found)
+find_package(TBB QUIET)
+if(TBB_FOUND)
+    set(KERNELIX_HAS_TBB ON)
+    message(STATUS "TBB found - parallel execution enabled")
+else()
+    set(KERNELIX_HAS_TBB OFF)
+    message(STATUS "TBB not found - using sequential fallback")
+endif()
 
 # -----------------------------------------------------------------------------
 # Header-only library target
@@ -47,7 +54,10 @@ target_include_directories(kernelix INTERFACE
     $<INSTALL_INTERFACE:include>
 )
 
-target_link_libraries(kernelix INTERFACE TBB::tbb)
+if(KERNELIX_HAS_TBB)
+    target_link_libraries(kernelix INTERFACE TBB::tbb)
+    target_compile_definitions(kernelix INTERFACE KERNELIX_HAS_TBB=1)
+endif()
 
 target_compile_features(kernelix INTERFACE cxx_std_20)
 
@@ -190,5 +200,9 @@ message(STATUS "  AVX-512:         ${KERNELIX_ENABLE_AVX512}")
 message(STATUS "  NEON:            ${KERNELIX_ENABLE_NEON}")
 message(STATUS "")
 message(STATUS "Parallelism:")
-message(STATUS "  TBB:             Found")
+if(KERNELIX_HAS_TBB)
+    message(STATUS "  TBB:             Found")
+else()
+    message(STATUS "  TBB:             Not found (sequential fallback)")
+endif()
 message(STATUS "")

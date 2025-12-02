@@ -23,25 +23,38 @@ struct ContractionExpr : ExprBase {
     constexpr ContractionExpr(A lhs, B rhs) : a(std::move(lhs)), b(std::move(rhs)) {}
 };
 
-/// GEMM-specific expression with optional bias
+/// Empty type for no-bias case
+struct NoBias {};
+
+/// GEMM-specific expression with optional bias (primary template with bias)
 template<typename A, typename B, typename Bias = void>
 struct GemmExpr : ExprBase {
     using a_type = A;
     using b_type = B;
     using bias_type = Bias;
-    static constexpr bool has_bias = !std::is_void_v<Bias>;
+    static constexpr bool has_bias = true;
 
     A a;
     B b;
-    [[no_unique_address]] Bias bias;
-
-    constexpr GemmExpr(A mat_a, B mat_b)
-        requires std::is_void_v<Bias>
-        : a(std::move(mat_a)), b(std::move(mat_b)), bias{} {}
+    Bias bias;
 
     constexpr GemmExpr(A mat_a, B mat_b, Bias mat_bias)
-        requires (!std::is_void_v<Bias>)
         : a(std::move(mat_a)), b(std::move(mat_b)), bias(std::move(mat_bias)) {}
+};
+
+/// Specialization for no-bias case
+template<typename A, typename B>
+struct GemmExpr<A, B, void> : ExprBase {
+    using a_type = A;
+    using b_type = B;
+    using bias_type = void;
+    static constexpr bool has_bias = false;
+
+    A a;
+    B b;
+
+    constexpr GemmExpr(A mat_a, B mat_b)
+        : a(std::move(mat_a)), b(std::move(mat_b)) {}
 };
 
 /// GEMV-specific expression

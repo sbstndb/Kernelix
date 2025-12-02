@@ -255,6 +255,37 @@ struct ExprTraits<expr::LayerNormExpr<Input, Gamma, Beta>> {
     static constexpr bool allows_fusion = true;
 };
 
+/// Traits for Softmax expression
+/// Input: [batch, seq_len] or [batch, seq_len, vocab_size], Output: same shape
+/// Softmax is applied over the last dimension
+template<typename Input>
+struct ExprTraits<expr::SoftmaxExpr<Input>> {
+    using op_category = op_category::Normalization;
+    using value_type = value_type_t<Input>;
+    using input_traits = ExprTraits<std::remove_cvref_t<Input>>;
+
+    static constexpr bool is_expression = true;
+    static constexpr bool is_terminal = false;
+
+    // Output shape is same as input shape
+    static constexpr std::size_t rank = input_traits::rank;
+    static constexpr auto output_shape = input_traits::output_shape;
+    static constexpr std::size_t output_size = input_traits::output_size;
+
+    // For 2D input [batch, dim] - softmax over dim
+    // For 1D input [dim] - softmax over entire vector
+    static constexpr std::size_t num_rows = (rank >= 2) ? output_shape[0] : 1;
+    static constexpr std::size_t softmax_dim = (rank >= 2) ? output_shape[1] : output_shape[0];
+
+    // Cost estimation: max (1 pass), exp+sub (1 pass), sum (1 pass), div (1 pass)
+    // ~4N flops per row (max, exp, sum, div)
+    static constexpr std::size_t estimated_flops = 4 * output_size;
+    static constexpr std::size_t estimated_bytes = 3 * output_size * sizeof(value_type);
+
+    static constexpr bool is_memory_bound = true;
+    static constexpr bool allows_fusion = true;  // Can fuse with preceding matmul (attention)
+};
+
 // ============================================================================
 // Helper concepts
 // ============================================================================

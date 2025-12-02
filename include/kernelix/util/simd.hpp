@@ -67,6 +67,18 @@ struct Vec<float> {
         sums = _mm_add_ss(sums, shuf);
         return _mm_cvtss_f32(sums);
     }
+
+    // Horizontal max
+    static float hmax(type v) {
+        __m128 lo = _mm256_castps256_ps128(v);
+        __m128 hi = _mm256_extractf128_ps(v, 1);
+        lo = _mm_max_ps(lo, hi);
+        __m128 shuf = _mm_movehdup_ps(lo);
+        __m128 maxs = _mm_max_ps(lo, shuf);
+        shuf = _mm_movehl_ps(shuf, maxs);
+        maxs = _mm_max_ss(maxs, shuf);
+        return _mm_cvtss_f32(maxs);
+    }
 };
 
 template<>
@@ -111,6 +123,12 @@ struct Vec<float> {
         sum = vpadd_f32(sum, sum);
         return vget_lane_f32(sum, 0);
     }
+
+    static float hmax(type v) {
+        float32x2_t maxv = vmax_f32(vget_low_f32(v), vget_high_f32(v));
+        maxv = vpmax_f32(maxv, maxv);
+        return vget_lane_f32(maxv, 0);
+    }
 };
 
 #else
@@ -134,6 +152,7 @@ struct Vec<float> {
     static type max(type a, type b) { return a > b ? a : b; }
     static type min(type a, type b) { return a < b ? a : b; }
     static float hsum(type v) { return v; }
+    static float hmax(type v) { return v; }
 };
 
 template<>
