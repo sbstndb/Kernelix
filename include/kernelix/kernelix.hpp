@@ -21,9 +21,9 @@
 
 // Version information
 #define KERNELIX_VERSION_MAJOR 0
-#define KERNELIX_VERSION_MINOR 5
+#define KERNELIX_VERSION_MINOR 6
 #define KERNELIX_VERSION_PATCH 0
-#define KERNELIX_VERSION_STRING "0.5.0"
+#define KERNELIX_VERSION_STRING "0.6.0"
 
 // Core components
 #include "core/types.hpp"
@@ -38,6 +38,7 @@
 #include "expr/contraction.hpp"
 #include "expr/norm.hpp"
 #include "expr/attention.hpp"
+#include "expr/rope.hpp"
 
 // Traits system
 #include "traits/expr_traits.hpp"
@@ -136,6 +137,41 @@ auto tanh_act(E&& expr) {
 }
 
 // ============================================================================
+// Element-wise Operations
+// ============================================================================
+
+/// Element-wise multiply: c = a * b
+template<typename A, typename B>
+auto mul(A&& a, B&& b) {
+    return expr::make_mul(std::forward<A>(a), std::forward<B>(b));
+}
+
+/// Element-wise add: c = a + b
+template<typename A, typename B>
+auto add(A&& a, B&& b) {
+    return expr::make_add(std::forward<A>(a), std::forward<B>(b));
+}
+
+/// Element-wise subtract: c = a - b
+template<typename A, typename B>
+auto sub(A&& a, B&& b) {
+    return expr::make_sub(std::forward<A>(a), std::forward<B>(b));
+}
+
+/// Element-wise divide: c = a / b
+template<typename A, typename B>
+auto div(A&& a, B&& b) {
+    return expr::make_div(std::forward<A>(a), std::forward<B>(b));
+}
+
+/// SwiGLU activation: silu(gate) * up
+/// Used in LLaMA/Mistral FFN: output = silu(linear_gate(x)) * linear_up(x)
+template<typename Gate, typename Up>
+auto swiglu(Gate&& gate, Up&& up) {
+    return mul(silu(std::forward<Gate>(gate)), std::forward<Up>(up));
+}
+
+// ============================================================================
 // Normalizations
 // ============================================================================
 
@@ -200,6 +236,44 @@ auto attention(const Q& query, const K& key, const V& value, float scale = 0.0f)
 template<TensorLike Q, TensorLike K, TensorLike V>
 auto causal_attention(const Q& query, const K& key, const V& value, float scale = 0.0f) {
     return expr::make_causal_attention(query, key, value, scale);
+}
+
+// ============================================================================
+// Rotary Position Embeddings (RoPE)
+// ============================================================================
+
+/// Apply Rotary Position Embeddings to input tensor
+///
+/// RoPE applies rotation based on position for each pair of dimensions:
+///   x'[2i]   = x[2i] * cos(θ) - x[2i+1] * sin(θ)
+///   x'[2i+1] = x[2i] * sin(θ) + x[2i+1] * cos(θ)
+///
+/// @param input Input tensor [seq_len, head_dim]
+/// @param cos_cache Precomputed cosines [max_seq_len, head_dim/2]
+/// @param sin_cache Precomputed sines [max_seq_len, head_dim/2]
+/// @param position_offset Starting position (for KV cache continuation)
+/// @return RoPE-transformed tensor [seq_len, head_dim]
+template<TensorLike Input, TensorLike CosSin>
+auto rope(const Input& input, const CosSin& cos_cache, const CosSin& sin_cache,
+          std::size_t position_offset = 0) {
+    return expr::make_rope(input, cos_cache, sin_cache, position_offset);
+}
+
+/// Precompute RoPE frequency caches (cos and sin)
+///
+/// Fills cos_cache and sin_cache with precomputed values for positions 0..max_seq_len-1
+/// θ_i = position / (base^(2i/head_dim))
+///
+/// @param cos_cache Output cos cache [max_seq_len, head_dim/2]
+/// @param sin_cache Output sin cache [max_seq_len, head_dim/2]
+/// @param max_seq_len Maximum sequence length
+/// @param head_dim Head dimension (must be even)
+/// @param base Base frequency (default: 10000.0)
+template<typename T>
+void rope_precompute_freqs(T* cos_cache, T* sin_cache,
+                           std::size_t max_seq_len, std::size_t head_dim,
+                           T base = T{10000}) {
+    kernel::RoPEKernel<T>::precompute_freqs(cos_cache, sin_cache, max_seq_len, head_dim, base);
 }
 
 // ============================================================================

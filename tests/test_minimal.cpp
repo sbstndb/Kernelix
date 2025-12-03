@@ -903,6 +903,182 @@ void test_attention_large() {
     std::cout << "PASSED (" << time_ms << " ms)" << std::endl;
 }
 
+void test_elementwise_mul() {
+    std::cout << "Testing element-wise multiply... ";
+
+    Tensor<float, 2, 4> a = {1, 2, 3, 4, 5, 6, 7, 8};
+    Tensor<float, 2, 4> b = {2, 2, 2, 2, 3, 3, 3, 3};
+    Tensor<float, 2, 4> output;
+
+    eval(mul(a, b), output.data());
+
+    // Row 0: [1*2, 2*2, 3*2, 4*2] = [2, 4, 6, 8]
+    assert(approx_equal(output(0, 0), 2.0f));
+    assert(approx_equal(output(0, 1), 4.0f));
+    assert(approx_equal(output(0, 2), 6.0f));
+    assert(approx_equal(output(0, 3), 8.0f));
+
+    // Row 1: [5*3, 6*3, 7*3, 8*3] = [15, 18, 21, 24]
+    assert(approx_equal(output(1, 0), 15.0f));
+    assert(approx_equal(output(1, 1), 18.0f));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_elementwise_add_sub() {
+    std::cout << "Testing element-wise add/sub... ";
+
+    Tensor<float, 4> a = {1, 2, 3, 4};
+    Tensor<float, 4> b = {10, 20, 30, 40};
+    Tensor<float, 4> output;
+
+    // Test add
+    eval(add(a, b), output.data());
+    assert(approx_equal(output[0], 11.0f));
+    assert(approx_equal(output[1], 22.0f));
+    assert(approx_equal(output[2], 33.0f));
+    assert(approx_equal(output[3], 44.0f));
+
+    // Test sub
+    eval(sub(b, a), output.data());
+    assert(approx_equal(output[0], 9.0f));
+    assert(approx_equal(output[1], 18.0f));
+    assert(approx_equal(output[2], 27.0f));
+    assert(approx_equal(output[3], 36.0f));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_swiglu() {
+    std::cout << "Testing SwiGLU activation... ";
+
+    constexpr std::size_t batch = 2;
+    constexpr std::size_t hidden = 4;
+
+    Tensor<float, batch, hidden> gate = {1, 2, 3, 4, -1, -2, 0, 1};
+    Tensor<float, batch, hidden> up = {1, 1, 1, 1, 2, 2, 2, 2};
+    Tensor<float, batch, hidden> output;
+
+    // SwiGLU = silu(gate) * up
+    eval(swiglu(gate, up), output.data());
+
+    // Reference: silu(x) = x * sigmoid(x) = x / (1 + exp(-x))
+    auto silu_ref = [](float x) { return x / (1.0f + std::exp(-x)); };
+
+    assert(approx_equal(output(0, 0), silu_ref(1.0f) * 1.0f));
+    assert(approx_equal(output(0, 1), silu_ref(2.0f) * 1.0f));
+    assert(approx_equal(output(1, 0), silu_ref(-1.0f) * 2.0f));
+    assert(approx_equal(output(1, 2), silu_ref(0.0f) * 2.0f));  // silu(0) = 0
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_rope() {
+    std::cout << "Testing RoPE... ";
+
+    constexpr std::size_t seq_len = 4;
+    constexpr std::size_t head_dim = 8;
+    constexpr std::size_t half_dim = head_dim / 2;
+
+    // Precompute cos/sin caches
+    Tensor<float, seq_len, half_dim> cos_cache, sin_cache;
+    rope_precompute_freqs(cos_cache.data(), sin_cache.data(), seq_len, head_dim);
+
+    // Create input (simple pattern)
+    Tensor<float, seq_len, head_dim> input;
+    for (std::size_t i = 0; i < seq_len; ++i) {
+        for (std::size_t d = 0; d < head_dim; ++d) {
+            input(i, d) = static_cast<float>(i + d + 1);
+        }
+    }
+
+    Tensor<float, seq_len, head_dim> output;
+
+    eval(rope(input, cos_cache, sin_cache), output.data());
+
+    // Verify manually for position 0
+    // At position 0, theta = 0, so cos=1, sin=0 for all freqs
+    // x'[2i] = x[2i]*1 - x[2i+1]*0 = x[2i]
+    // x'[2i+1] = x[2i]*0 + x[2i+1]*1 = x[2i+1]
+    // So output[0] should equal input[0]
+    for (std::size_t d = 0; d < head_dim; ++d) {
+        assert(approx_equal(output(0, d), input(0, d), 1e-5f));
+    }
+
+    // Verify no NaN/Inf
+    for (std::size_t i = 0; i < seq_len * head_dim; ++i) {
+        assert(!std::isnan(output[i]));
+        assert(!std::isinf(output[i]));
+    }
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_rope_rotation() {
+    std::cout << "Testing RoPE rotation correctness... ";
+
+    constexpr std::size_t seq_len = 2;
+    constexpr std::size_t head_dim = 4;
+    constexpr std::size_t half_dim = head_dim / 2;
+
+    // Precompute cos/sin caches
+    Tensor<float, seq_len, half_dim> cos_cache, sin_cache;
+    rope_precompute_freqs(cos_cache.data(), sin_cache.data(), seq_len, head_dim);
+
+    // Simple input: [1, 0, 1, 0] at position 1
+    Tensor<float, seq_len, head_dim> input;
+    input.fill(0.0f);
+    input(1, 0) = 1.0f;  // x0 = 1, x1 = 0
+    input(1, 2) = 1.0f;  // x2 = 1, x3 = 0
+
+    Tensor<float, seq_len, head_dim> output;
+    eval(rope(input, cos_cache, sin_cache), output.data());
+
+    // At position 1:
+    // x'[0] = x[0]*cos - x[1]*sin = 1*cos - 0*sin = cos
+    // x'[1] = x[0]*sin + x[1]*cos = 1*sin + 0*cos = sin
+    assert(approx_equal(output(1, 0), cos_cache(1, 0), 1e-5f));
+    assert(approx_equal(output(1, 1), sin_cache(1, 0), 1e-5f));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_rope_large() {
+    std::cout << "Testing RoPE (large)... ";
+
+    constexpr std::size_t seq_len = 128;
+    constexpr std::size_t head_dim = 64;
+    constexpr std::size_t half_dim = head_dim / 2;
+
+    Tensor<float, seq_len, half_dim> cos_cache, sin_cache;
+    rope_precompute_freqs(cos_cache.data(), sin_cache.data(), seq_len, head_dim);
+
+    Tensor<float, seq_len, head_dim> input;
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (auto& v : input) v = dist(rng);
+
+    Tensor<float, seq_len, head_dim> output;
+
+    auto start = std::chrono::high_resolution_clock::now();
+    eval(rope(input, cos_cache, sin_cache), output.data());
+    auto end = std::chrono::high_resolution_clock::now();
+
+    double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+    // Verify no NaN/Inf
+    bool valid = true;
+    for (std::size_t i = 0; i < seq_len * head_dim; ++i) {
+        if (std::isnan(output[i]) || std::isinf(output[i])) {
+            valid = false;
+            break;
+        }
+    }
+    assert(valid);
+
+    std::cout << "PASSED (" << time_ms << " ms)" << std::endl;
+}
+
 int main() {
     std::cout << "Kernelix v" << Version::string << " - Tests" << std::endl;
     std::cout << "=============================================" << std::endl;
@@ -952,6 +1128,16 @@ int main() {
     test_causal_attention();
     test_causal_attention_mask();
     test_attention_large();
+
+    // Element-wise operations
+    test_elementwise_mul();
+    test_elementwise_add_sub();
+    test_swiglu();
+
+    // RoPE
+    test_rope();
+    test_rope_rotation();
+    test_rope_large();
 
     // API tests
     test_compute_returns_tensor();

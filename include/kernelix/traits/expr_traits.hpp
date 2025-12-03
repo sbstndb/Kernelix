@@ -7,6 +7,7 @@
 #include "../expr/binary.hpp"
 #include "../expr/norm.hpp"
 #include "../expr/attention.hpp"
+#include "../expr/rope.hpp"
 #include <array>
 #include <type_traits>
 
@@ -113,6 +114,18 @@ struct ValueTypeOf<expr::GemmExpr<A, B, Bias>> {
     using type = typename ValueTypeOf<std::remove_cvref_t<A>>::type;
 };
 
+/// Specialization for BinaryExpr - extract from LHS
+template<typename LHS, typename RHS, typename Op>
+struct ValueTypeOf<expr::BinaryExpr<LHS, RHS, Op>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<LHS>>::type;
+};
+
+/// Specialization for UnaryExpr - extract from input
+template<typename Input, typename Op>
+struct ValueTypeOf<expr::UnaryExpr<Input, Op>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Input>>::type;
+};
+
 /// Specialization for ScaledDotProductAttentionExpr - extract from query
 template<typename Q, typename K, typename V>
 struct ValueTypeOf<expr::ScaledDotProductAttentionExpr<Q, K, V>> {
@@ -123,6 +136,12 @@ struct ValueTypeOf<expr::ScaledDotProductAttentionExpr<Q, K, V>> {
 template<typename Q, typename K, typename V>
 struct ValueTypeOf<expr::CausalAttentionExpr<Q, K, V>> {
     using type = typename ValueTypeOf<std::remove_cvref_t<Q>>::type;
+};
+
+/// Specialization for RoPEExpr - extract from input
+template<typename Input, typename CosSin>
+struct ValueTypeOf<expr::RoPEExpr<Input, CosSin>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Input>>::type;
 };
 
 template<typename T>
@@ -405,6 +424,34 @@ struct ExprTraits<expr::CausalAttentionExpr<Query, Key, Value>>
     : ExprTraits<expr::ScaledDotProductAttentionExpr<Query, Key, Value>> {
     // Inherits everything from standard attention
     // Causal mask doesn't change output shape or significantly change cost
+};
+
+/// Traits for RoPE expression
+/// Input: [seq_len, head_dim], Output: [seq_len, head_dim]
+template<typename Input, typename CosSin>
+struct ExprTraits<expr::RoPEExpr<Input, CosSin>> {
+    using op_category = op_category::Elementwise;
+    using value_type = value_type_t<Input>;
+    using input_traits = ExprTraits<std::remove_cvref_t<Input>>;
+
+    static constexpr bool is_expression = true;
+    static constexpr bool is_terminal = false;
+
+    // Output shape is same as input shape
+    static constexpr std::size_t rank = input_traits::rank;
+    static constexpr auto output_shape = input_traits::output_shape;
+    static constexpr std::size_t output_size = input_traits::output_size;
+
+    // For 2D input [seq_len, head_dim]
+    static constexpr std::size_t seq_len = output_shape[0];
+    static constexpr std::size_t head_dim = output_shape[1];
+
+    // Cost: 4 multiplies + 2 adds per pair = 6 ops per pair, head_dim/2 pairs per position
+    static constexpr std::size_t estimated_flops = seq_len * head_dim * 3;
+    static constexpr std::size_t estimated_bytes = 4 * output_size * sizeof(value_type);
+
+    static constexpr bool is_memory_bound = true;
+    static constexpr bool allows_fusion = true;
 };
 
 // ============================================================================

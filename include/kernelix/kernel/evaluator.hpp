@@ -10,6 +10,7 @@
 #include "norm/layernorm.hpp"
 #include "norm/softmax.hpp"
 #include "attention/impl.hpp"
+#include "rope/impl.hpp"
 #include "../util/parallel.hpp"
 #include <cmath>
 #include <type_traits>
@@ -246,6 +247,138 @@ private:
         if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
             const T* src = expr.data();
             std::copy(src, src + InputTraits::output_size, buf);
+        } else {
+            Evaluator<std::remove_cvref_t<E>>::run(expr, buf);
+        }
+    }
+};
+
+// ============================================================================
+// Binary Expression Evaluators (Element-wise ops)
+// ============================================================================
+
+/// Element-wise multiply evaluator
+template<typename LHS, typename RHS>
+struct Evaluator<expr::BinaryExpr<LHS, RHS, expr::MulOp>> {
+    using Traits = traits::ExprTraits<expr::BinaryExpr<LHS, RHS, expr::MulOp>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::BinaryExpr<LHS, RHS, expr::MulOp>& e, T* output) {
+        constexpr std::size_t N = Traits::output_size;
+
+        auto lhs_buf = memory::make_aligned<T>(N);
+        auto rhs_buf = memory::make_aligned<T>(N);
+
+        evaluate_operand(e.lhs, lhs_buf.get());
+        evaluate_operand(e.rhs, rhs_buf.get());
+
+        parallel::parallel_for(0, N, [&lhs_buf, &rhs_buf, output](std::size_t i) {
+            output[i] = lhs_buf[i] * rhs_buf[i];
+        });
+    }
+
+private:
+    template<typename E>
+    static void evaluate_operand(const E& expr, T* buf) {
+        if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
+            const T* src = expr.data();
+            std::copy(src, src + Traits::output_size, buf);
+        } else {
+            Evaluator<std::remove_cvref_t<E>>::run(expr, buf);
+        }
+    }
+};
+
+/// Element-wise add evaluator
+template<typename LHS, typename RHS>
+struct Evaluator<expr::BinaryExpr<LHS, RHS, expr::AddOp>> {
+    using Traits = traits::ExprTraits<expr::BinaryExpr<LHS, RHS, expr::AddOp>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::BinaryExpr<LHS, RHS, expr::AddOp>& e, T* output) {
+        constexpr std::size_t N = Traits::output_size;
+
+        auto lhs_buf = memory::make_aligned<T>(N);
+        auto rhs_buf = memory::make_aligned<T>(N);
+
+        evaluate_operand(e.lhs, lhs_buf.get());
+        evaluate_operand(e.rhs, rhs_buf.get());
+
+        parallel::parallel_for(0, N, [&lhs_buf, &rhs_buf, output](std::size_t i) {
+            output[i] = lhs_buf[i] + rhs_buf[i];
+        });
+    }
+
+private:
+    template<typename E>
+    static void evaluate_operand(const E& expr, T* buf) {
+        if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
+            const T* src = expr.data();
+            std::copy(src, src + Traits::output_size, buf);
+        } else {
+            Evaluator<std::remove_cvref_t<E>>::run(expr, buf);
+        }
+    }
+};
+
+/// Element-wise subtract evaluator
+template<typename LHS, typename RHS>
+struct Evaluator<expr::BinaryExpr<LHS, RHS, expr::SubOp>> {
+    using Traits = traits::ExprTraits<expr::BinaryExpr<LHS, RHS, expr::SubOp>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::BinaryExpr<LHS, RHS, expr::SubOp>& e, T* output) {
+        constexpr std::size_t N = Traits::output_size;
+
+        auto lhs_buf = memory::make_aligned<T>(N);
+        auto rhs_buf = memory::make_aligned<T>(N);
+
+        evaluate_operand(e.lhs, lhs_buf.get());
+        evaluate_operand(e.rhs, rhs_buf.get());
+
+        parallel::parallel_for(0, N, [&lhs_buf, &rhs_buf, output](std::size_t i) {
+            output[i] = lhs_buf[i] - rhs_buf[i];
+        });
+    }
+
+private:
+    template<typename E>
+    static void evaluate_operand(const E& expr, T* buf) {
+        if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
+            const T* src = expr.data();
+            std::copy(src, src + Traits::output_size, buf);
+        } else {
+            Evaluator<std::remove_cvref_t<E>>::run(expr, buf);
+        }
+    }
+};
+
+/// Element-wise divide evaluator
+template<typename LHS, typename RHS>
+struct Evaluator<expr::BinaryExpr<LHS, RHS, expr::DivOp>> {
+    using Traits = traits::ExprTraits<expr::BinaryExpr<LHS, RHS, expr::DivOp>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::BinaryExpr<LHS, RHS, expr::DivOp>& e, T* output) {
+        constexpr std::size_t N = Traits::output_size;
+
+        auto lhs_buf = memory::make_aligned<T>(N);
+        auto rhs_buf = memory::make_aligned<T>(N);
+
+        evaluate_operand(e.lhs, lhs_buf.get());
+        evaluate_operand(e.rhs, rhs_buf.get());
+
+        parallel::parallel_for(0, N, [&lhs_buf, &rhs_buf, output](std::size_t i) {
+            output[i] = lhs_buf[i] / rhs_buf[i];
+        });
+    }
+
+private:
+    template<typename E>
+    static void evaluate_operand(const E& expr, T* buf) {
+        if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
+            const T* src = expr.data();
+            std::copy(src, src + Traits::output_size, buf);
         } else {
             Evaluator<std::remove_cvref_t<E>>::run(expr, buf);
         }
@@ -546,6 +679,41 @@ struct Evaluator<expr::CausalAttentionExpr<Query, Key, Value>> {
             q_data, k_data, v_data, output,
             seq_len_q, seq_len_k, head_dim, scale
         );
+    }
+};
+
+// ============================================================================
+// RoPE Evaluator
+// ============================================================================
+
+/// RoPE (Rotary Position Embedding) evaluator
+template<typename Input, typename CosSin>
+struct Evaluator<expr::RoPEExpr<Input, CosSin>> {
+    using Traits = traits::ExprTraits<expr::RoPEExpr<Input, CosSin>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::RoPEExpr<Input, CosSin>& e, T* output) {
+        constexpr std::size_t seq_len = Traits::seq_len;
+        constexpr std::size_t head_dim = Traits::head_dim;
+
+        const T* input_data = get_input_data(e.input);
+        const T* cos_data = e.cos_cache.data();
+        const T* sin_data = e.sin_cache.data();
+
+        RoPEKernel<T>::run_optimized(
+            input_data, cos_data, sin_data, output,
+            seq_len, head_dim, e.position_offset
+        );
+    }
+
+private:
+    template<typename E>
+    static const T* get_input_data(const E& expr) {
+        if constexpr (traits::ExprTraits<std::remove_cvref_t<E>>::is_terminal) {
+            return expr.data();
+        } else {
+            return expr.data();
+        }
     }
 };
 
