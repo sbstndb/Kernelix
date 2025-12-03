@@ -97,9 +97,11 @@ auto linear(const X& x, const W& w) {
 }
 
 /// Linear transformation: y = expr @ W (Expression as first input for fusion)
+/// Stores expression by value for proper pattern matching in evaluator
 template<ExprLike X, TensorLike W>
-auto linear(const X& x, const W& w) {
-    return expr::GemmExpr<const X&, const W&, void>(x, w);
+auto linear(X&& x, const W& w) {
+    return expr::GemmExpr<std::remove_cvref_t<X>, const W&, void>(
+        std::forward<X>(x), w);
 }
 
 /// Linear transformation with bias: y = x @ W + b

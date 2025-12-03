@@ -49,17 +49,71 @@ struct ShapeOf<TensorView<T, Dims...>> {
 template<typename T, std::size_t... Dims>
 struct ShapeOf<const TensorView<T, Dims...>&> : ShapeOf<TensorView<T, Dims...>> {};
 
+// Forward declaration for expression shape extraction
+template<typename E>
+struct ExprTraits;
+
+/// ShapeOf for expression types - uses ExprTraits to get output shape
+template<typename Input, typename Weight>
+struct ShapeOf<expr::RMSNormExpr<Input, Weight>> {
+    using Traits = ExprTraits<expr::RMSNormExpr<Input, Weight>>;
+    static constexpr std::size_t rank = Traits::rank;
+    static constexpr auto shape = Traits::output_shape;
+    using value_type = typename Traits::value_type;
+};
+
+template<typename Input, typename Gamma, typename Beta>
+struct ShapeOf<expr::LayerNormExpr<Input, Gamma, Beta>> {
+    using Traits = ExprTraits<expr::LayerNormExpr<Input, Gamma, Beta>>;
+    static constexpr std::size_t rank = Traits::rank;
+    static constexpr auto shape = Traits::output_shape;
+    using value_type = typename Traits::value_type;
+};
+
+template<typename Input>
+struct ShapeOf<expr::SoftmaxExpr<Input>> {
+    using Traits = ExprTraits<expr::SoftmaxExpr<Input>>;
+    static constexpr std::size_t rank = Traits::rank;
+    static constexpr auto shape = Traits::output_shape;
+    using value_type = typename Traits::value_type;
+};
+
 // ============================================================================
 // Value type extraction
 // ============================================================================
 
+/// Helper to recursively extract value_type from nested types
 template<typename T>
 struct ValueTypeOf {
     using type = typename std::remove_cvref_t<T>::value_type;
 };
 
+/// Specialization for RMSNormExpr - extract from input
+template<typename Input, typename Weight>
+struct ValueTypeOf<expr::RMSNormExpr<Input, Weight>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Input>>::type;
+};
+
+/// Specialization for LayerNormExpr - extract from input
+template<typename Input, typename Gamma, typename Beta>
+struct ValueTypeOf<expr::LayerNormExpr<Input, Gamma, Beta>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Input>>::type;
+};
+
+/// Specialization for SoftmaxExpr - extract from input
+template<typename Input>
+struct ValueTypeOf<expr::SoftmaxExpr<Input>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Input>>::type;
+};
+
+/// Specialization for GemmExpr - extract from first operand
+template<typename A, typename B, typename Bias>
+struct ValueTypeOf<expr::GemmExpr<A, B, Bias>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<A>>::type;
+};
+
 template<typename T>
-using value_type_t = typename ValueTypeOf<T>::type;
+using value_type_t = typename ValueTypeOf<std::remove_cvref_t<T>>::type;
 
 // ============================================================================
 // Expression Traits

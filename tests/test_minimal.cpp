@@ -554,35 +554,34 @@ void test_rmsnorm_large() {
     std::cout << "PASSED (" << time_ms << " ms)" << std::endl;
 }
 
-// TODO: Fix fused RMSNorm+Linear evaluator pattern matching
-// void test_fused_rmsnorm_linear() {
-//     std::cout << "Testing fused RMSNorm + Linear... ";
-//
-//     constexpr std::size_t batch = 4;
-//     constexpr std::size_t hidden_in = 8;
-//     constexpr std::size_t hidden_out = 8;
-//
-//     Tensor<float, batch, hidden_in> x;
-//     Tensor<float, hidden_in> norm_weight;
-//     Tensor<float, hidden_in, hidden_out> linear_weight;
-//     Tensor<float, batch, hidden_out> output;
-//
-//     // Initialize
-//     x.fill(1.0f);
-//     norm_weight.fill(1.0f);
-//     linear_weight.fill(0.1f);
-//
-//     // Fused: linear(rmsnorm(x, w), W)
-//     auto expr = linear(rmsnorm(x, norm_weight), linear_weight);
-//     eval(expr, output.data());
-//
-//     // RMSNorm of all-ones: rms = 1.0, so normalized = 1.0
-//     // Linear: each output = sum of 8 * 0.1 = 0.8
-//     assert(approx_equal(output(0, 0), 0.8f, 1e-3f));
-//     assert(approx_equal(output(batch-1, hidden_out-1), 0.8f, 1e-3f));
-//
-//     std::cout << "PASSED" << std::endl;
-// }
+void test_fused_rmsnorm_linear() {
+    std::cout << "Testing fused RMSNorm + Linear... ";
+
+    constexpr std::size_t batch = 4;
+    constexpr std::size_t hidden_in = 8;
+    constexpr std::size_t hidden_out = 8;
+
+    Tensor<float, batch, hidden_in> x;
+    Tensor<float, hidden_in> norm_weight;
+    Tensor<float, hidden_in, hidden_out> linear_weight;
+    Tensor<float, batch, hidden_out> output;
+
+    // Initialize
+    x.fill(1.0f);
+    norm_weight.fill(1.0f);
+    linear_weight.fill(0.1f);
+
+    // Fused: linear(rmsnorm(x, w), W)
+    auto expr = linear(rmsnorm(x, norm_weight), linear_weight);
+    eval(expr, output.data());
+
+    // RMSNorm of all-ones: rms = 1.0, so normalized = 1.0
+    // Linear: each output = sum of 8 * 0.1 = 0.8
+    assert(approx_equal(output(0, 0), 0.8f, 1e-3f));
+    assert(approx_equal(output(batch-1, hidden_out-1), 0.8f, 1e-3f));
+
+    std::cout << "PASSED" << std::endl;
+}
 
 void test_softmax() {
     std::cout << "Testing Softmax... ";
@@ -754,7 +753,7 @@ int main() {
     test_layernorm();
     test_layernorm_with_params();
     test_rmsnorm_large();
-    // test_fused_rmsnorm_linear();  // TODO: Fix fused evaluator pattern matching
+    test_fused_rmsnorm_linear();
 
     // Softmax
     test_softmax();
