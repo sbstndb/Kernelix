@@ -3,6 +3,7 @@
 
 #include <kernelix/kernelix.hpp>
 #include <kernelix/kernel/gemm/fused.hpp>
+#include <kernelix/kernel/gemm/chained.hpp>
 #include <benchmark/benchmark.h>
 #include <random>
 #include <cmath>
@@ -573,3 +574,122 @@ static void BM_FMA_Scalar(benchmark::State& state) {
 
 BENCHMARK(BM_FMA_SIMD<1048576>)->Name("SIMD/FMA_SIMD/1M")->Unit(benchmark::kMicrosecond);
 BENCHMARK(BM_FMA_Scalar<1048576>)->Name("SIMD/FMA_Scalar/1M")->Unit(benchmark::kMicrosecond);
+
+// =============================================================================
+// CHAINED GEMM: Result = A @ B @ C
+// =============================================================================
+
+/// Naive chained GEMM (full intermediate materialization)
+template<std::size_t M, std::size_t K1, std::size_t K2, std::size_t N>
+static void BM_ChainedGEMM_Naive(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K1);
+    auto B = memory::make_aligned<float>(K1 * K2);
+    auto C = memory::make_aligned<float>(K2 * N);
+    auto Result = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K1, 1);
+    fill_random(B.get(), K1 * K2, 2);
+    fill_random(C.get(), K2 * N, 3);
+
+    for (auto _ : state) {
+        kernel::gemm_chain_naive(
+            A.get(), B.get(), C.get(), Result.get(),
+            M, K1, K2, N,
+            K1, K2, N, N
+        );
+        benchmark::DoNotOptimize(Result.get());
+        benchmark::ClobberMemory();
+    }
+
+    // FLOPs: M*K1*K2 + M*K2*N multiplications, same for additions
+    const double flops = 2.0 * M * K1 * K2 + 2.0 * M * K2 * N;
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+
+    // Memory for intermediate: M * K2 * sizeof(float)
+    state.counters["IntermediateMB"] = (M * K2 * sizeof(float)) / (1024.0 * 1024.0);
+}
+
+/// Fused chained GEMM (panel-based, no full intermediate)
+template<std::size_t M, std::size_t K1, std::size_t K2, std::size_t N>
+static void BM_ChainedGEMM_Fused(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K1);
+    auto B = memory::make_aligned<float>(K1 * K2);
+    auto C = memory::make_aligned<float>(K2 * N);
+    auto Result = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K1, 1);
+    fill_random(B.get(), K1 * K2, 2);
+    fill_random(C.get(), K2 * N, 3);
+
+    for (auto _ : state) {
+        kernel::gemm_chain_impl(
+            A.get(), B.get(), C.get(), Result.get(),
+            M, K1, K2, N,
+            K1, K2, N, N
+        );
+        benchmark::DoNotOptimize(Result.get());
+        benchmark::ClobberMemory();
+    }
+
+    const double flops = 2.0 * M * K1 * K2 + 2.0 * M * K2 * N;
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+
+    // Buffer size: MC * KC2 (fits in L2)
+    state.counters["BufferKB"] = (128 * 256 * sizeof(float)) / 1024.0;
+}
+
+/// Auto-associating chained GEMM
+template<std::size_t M, std::size_t K1, std::size_t K2, std::size_t N>
+static void BM_ChainedGEMM_Auto(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K1);
+    auto B = memory::make_aligned<float>(K1 * K2);
+    auto C = memory::make_aligned<float>(K2 * N);
+    auto Result = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K1, 1);
+    fill_random(B.get(), K1 * K2, 2);
+    fill_random(C.get(), K2 * N, 3);
+
+    for (auto _ : state) {
+        kernel::gemm_chain_auto_impl(
+            A.get(), B.get(), C.get(), Result.get(),
+            M, K1, K2, N,
+            K1, K2, N, N
+        );
+        benchmark::DoNotOptimize(Result.get());
+        benchmark::ClobberMemory();
+    }
+
+    const double flops = 2.0 * M * K1 * K2 + 2.0 * M * K2 * N;
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+}
+
+// Small square matrices (256x256)
+BENCHMARK(BM_ChainedGEMM_Naive<256, 256, 256, 256>)->Name("ChainedGEMM/Naive/256")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_ChainedGEMM_Fused<256, 256, 256, 256>)->Name("ChainedGEMM/Fused/256")->Unit(benchmark::kMillisecond);
+
+// Medium square matrices (512x512)
+BENCHMARK(BM_ChainedGEMM_Naive<512, 512, 512, 512>)->Name("ChainedGEMM/Naive/512")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_ChainedGEMM_Fused<512, 512, 512, 512>)->Name("ChainedGEMM/Fused/512")->Unit(benchmark::kMillisecond);
+
+// MLP-like: expand then project (batch=256, hidden=256, intermediate=1024)
+// Intermediate AB: 256 × 1024 = 1 MB
+BENCHMARK(BM_ChainedGEMM_Naive<256, 256, 1024, 256>)->Name("ChainedGEMM/Naive/MLP_256_1024")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_ChainedGEMM_Fused<256, 256, 1024, 256>)->Name("ChainedGEMM/Fused/MLP_256_1024")->Unit(benchmark::kMillisecond);
+
+// Larger MLP-like: batch=512, hidden=512, intermediate=2048
+// Intermediate AB: 512 × 2048 = 4 MB
+BENCHMARK(BM_ChainedGEMM_Naive<512, 512, 2048, 512>)->Name("ChainedGEMM/Naive/MLP_512_2048")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_ChainedGEMM_Fused<512, 512, 2048, 512>)->Name("ChainedGEMM/Fused/MLP_512_2048")->Unit(benchmark::kMillisecond);
+
+// LLaMA-like dimensions (smaller scale for benchmark): batch=1024, hidden=512, intermediate=2048
+// Intermediate AB: 1024 × 2048 = 8 MB
+BENCHMARK(BM_ChainedGEMM_Naive<1024, 512, 2048, 512>)->Name("ChainedGEMM/Naive/LLaMA_1024")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_ChainedGEMM_Fused<1024, 512, 2048, 512>)->Name("ChainedGEMM/Fused/LLaMA_1024")->Unit(benchmark::kMillisecond);
+
+// Test auto-association on asymmetric case
+// Left: M*K2 = 1024*2048 = 8 MB, Right: K1*N = 512*512 = 1 MB → should pick right
+BENCHMARK(BM_ChainedGEMM_Auto<1024, 512, 2048, 512>)->Name("ChainedGEMM/Auto/LLaMA_1024")->Unit(benchmark::kMillisecond);
