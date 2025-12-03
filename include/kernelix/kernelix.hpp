@@ -21,9 +21,9 @@
 
 // Version information
 #define KERNELIX_VERSION_MAJOR 0
-#define KERNELIX_VERSION_MINOR 4
+#define KERNELIX_VERSION_MINOR 5
 #define KERNELIX_VERSION_PATCH 0
-#define KERNELIX_VERSION_STRING "0.4.0"
+#define KERNELIX_VERSION_STRING "0.5.0"
 
 // Core components
 #include "core/types.hpp"
@@ -37,6 +37,7 @@
 #include "expr/unary.hpp"
 #include "expr/contraction.hpp"
 #include "expr/norm.hpp"
+#include "expr/attention.hpp"
 
 // Traits system
 #include "traits/expr_traits.hpp"
@@ -165,6 +166,40 @@ auto layernorm(const X& x, const Gamma& gamma, const Beta& beta, float eps = 1e-
 template<TensorLike X>
 auto softmax(const X& x) {
     return expr::SoftmaxExpr<const X&>(x);
+}
+
+// ============================================================================
+// Attention
+// ============================================================================
+
+/// Scaled Dot-Product Attention: Output = softmax(Q @ K^T / sqrt(head_dim)) @ V
+///
+/// Implements the standard attention mechanism used in Transformers.
+/// If scale is 0, it will be computed as 1/sqrt(head_dim).
+///
+/// @param query Query tensor [seq_len_q, head_dim]
+/// @param key Key tensor [seq_len_k, head_dim]
+/// @param value Value tensor [seq_len_k, head_dim]
+/// @param scale Scaling factor (default: 0 = auto-compute 1/sqrt(head_dim))
+/// @return Attention output [seq_len_q, head_dim]
+template<TensorLike Q, TensorLike K, TensorLike V>
+auto attention(const Q& query, const K& key, const V& value, float scale = 0.0f) {
+    return expr::make_attention(query, key, value, scale);
+}
+
+/// Causal (Masked) Attention: Output = softmax(mask(Q @ K^T / sqrt(head_dim))) @ V
+///
+/// Implements causal attention where positions can only attend to earlier positions.
+/// Used in autoregressive models (GPT-style). Future positions are masked with -inf.
+///
+/// @param query Query tensor [seq_len_q, head_dim]
+/// @param key Key tensor [seq_len_k, head_dim]
+/// @param value Value tensor [seq_len_k, head_dim]
+/// @param scale Scaling factor (default: 0 = auto-compute 1/sqrt(head_dim))
+/// @return Attention output [seq_len_q, head_dim]
+template<TensorLike Q, TensorLike K, TensorLike V>
+auto causal_attention(const Q& query, const K& key, const V& value, float scale = 0.0f) {
+    return expr::make_causal_attention(query, key, value, scale);
 }
 
 // ============================================================================

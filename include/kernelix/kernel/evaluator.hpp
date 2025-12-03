@@ -9,6 +9,7 @@
 #include "norm/rmsnorm.hpp"
 #include "norm/layernorm.hpp"
 #include "norm/softmax.hpp"
+#include "attention/impl.hpp"
 #include "../util/parallel.hpp"
 #include <cmath>
 #include <type_traits>
@@ -486,6 +487,65 @@ struct Evaluator<expr::GemmExpr<expr::LayerNormExpr<Input, Gamma, Beta>, LinearW
         } else {
             gemm_impl(normed.get(), linear_weight, output, M, N, K, K, N, N, false);
         }
+    }
+};
+
+// ============================================================================
+// Attention Evaluators
+// ============================================================================
+
+/// Scaled Dot-Product Attention evaluator
+template<typename Query, typename Key, typename Value>
+struct Evaluator<expr::ScaledDotProductAttentionExpr<Query, Key, Value>> {
+    using Traits = traits::ExprTraits<expr::ScaledDotProductAttentionExpr<Query, Key, Value>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::ScaledDotProductAttentionExpr<Query, Key, Value>& e, T* output) {
+        constexpr std::size_t seq_len_q = Traits::seq_len_q;
+        constexpr std::size_t seq_len_k = Traits::seq_len_k;
+        constexpr std::size_t head_dim = Traits::head_dim;
+
+        const T* q_data = e.query.data();
+        const T* k_data = e.key.data();
+        const T* v_data = e.value.data();
+
+        // Compute scale: 1/sqrt(head_dim) if not provided
+        T scale = e.scale;
+        if (scale == T{0}) {
+            scale = T{1} / std::sqrt(static_cast<T>(head_dim));
+        }
+
+        AttentionKernel<T>::run_optimized(
+            q_data, k_data, v_data, output,
+            seq_len_q, seq_len_k, head_dim, scale
+        );
+    }
+};
+
+/// Causal Attention evaluator
+template<typename Query, typename Key, typename Value>
+struct Evaluator<expr::CausalAttentionExpr<Query, Key, Value>> {
+    using Traits = traits::ExprTraits<expr::CausalAttentionExpr<Query, Key, Value>>;
+    using T = typename Traits::value_type;
+
+    static void run(const expr::CausalAttentionExpr<Query, Key, Value>& e, T* output) {
+        constexpr std::size_t seq_len_q = Traits::seq_len_q;
+        constexpr std::size_t seq_len_k = Traits::seq_len_k;
+        constexpr std::size_t head_dim = Traits::head_dim;
+
+        const T* q_data = e.query.data();
+        const T* k_data = e.key.data();
+        const T* v_data = e.value.data();
+
+        T scale = e.scale;
+        if (scale == T{0}) {
+            scale = T{1} / std::sqrt(static_cast<T>(head_dim));
+        }
+
+        AttentionKernel<T>::run_causal_optimized(
+            q_data, k_data, v_data, output,
+            seq_len_q, seq_len_k, head_dim, scale
+        );
     }
 };
 

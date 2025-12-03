@@ -718,6 +718,191 @@ void test_softmax_large() {
     std::cout << "PASSED (" << time_ms << " ms)" << std::endl;
 }
 
+void test_attention() {
+    std::cout << "Testing Scaled Dot-Product Attention... ";
+
+    constexpr std::size_t seq_len = 4;
+    constexpr std::size_t head_dim = 8;
+
+    // Simple test: Q, K, V as identity-like patterns
+    Tensor<float, seq_len, head_dim> Q, K, V;
+    Tensor<float, seq_len, head_dim> output;
+
+    // Initialize Q, K with values that make verification tractable
+    // Q[i] = K[i] creates high attention on diagonal
+    for (std::size_t i = 0; i < seq_len; ++i) {
+        for (std::size_t d = 0; d < head_dim; ++d) {
+            float val = (i == d % seq_len) ? 1.0f : 0.0f;
+            Q(i, d) = val;
+            K(i, d) = val;
+            V(i, d) = static_cast<float>(i + 1);  // V rows: [1,1,...], [2,2,...], etc.
+        }
+    }
+
+    auto expr = attention(Q, K, V);
+    eval(expr, output.data());
+
+    // Verify no NaN/Inf
+    for (std::size_t i = 0; i < seq_len * head_dim; ++i) {
+        assert(!std::isnan(output[i]));
+        assert(!std::isinf(output[i]));
+    }
+
+    // Output should be weighted combination of V rows based on attention scores
+    // With Q[i] ≈ K[i], attention peaks on diagonal, so output[i] ≈ V[i]
+    // But there's still some attention to other positions
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_attention_reference() {
+    std::cout << "Testing Attention against reference... ";
+
+    constexpr std::size_t seq_len_q = 2;
+    constexpr std::size_t seq_len_k = 3;
+    constexpr std::size_t head_dim = 4;
+
+    // Manual test with known values
+    Tensor<float, seq_len_q, head_dim> Q = {1, 0, 1, 0,   0, 1, 0, 1};  // 2 query vectors
+    Tensor<float, seq_len_k, head_dim> K = {1, 0, 0, 0,   0, 1, 0, 0,   0, 0, 1, 0};  // 3 key vectors
+    Tensor<float, seq_len_k, head_dim> V = {1, 2, 3, 4,   5, 6, 7, 8,   9, 10, 11, 12};  // 3 value vectors
+    Tensor<float, seq_len_q, head_dim> output;
+
+    float scale = 1.0f / std::sqrt(static_cast<float>(head_dim));
+
+    // Compute reference manually
+    // Q @ K^T (scaled):
+    // Q[0] dot K[0] = 1, Q[0] dot K[1] = 0, Q[0] dot K[2] = 1 -> scores[0] = [1, 0, 1] * scale
+    // Q[1] dot K[0] = 0, Q[1] dot K[1] = 1, Q[1] dot K[2] = 0 -> scores[1] = [0, 1, 0] * scale
+
+    // Softmax on scores[0]: softmax([0.5, 0, 0.5]) with scale=0.5
+    // Softmax on scores[1]: softmax([0, 0.5, 0])
+
+    auto expr = attention(Q, K, V, scale);
+    eval(expr, output.data());
+
+    // Compute expected values manually
+    float s00 = 1.0f * scale, s01 = 0.0f * scale, s02 = 1.0f * scale;
+    float max0 = std::max({s00, s01, s02});
+    float exp00 = std::exp(s00 - max0), exp01 = std::exp(s01 - max0), exp02 = std::exp(s02 - max0);
+    float sum0 = exp00 + exp01 + exp02;
+    float a00 = exp00 / sum0, a01 = exp01 / sum0, a02 = exp02 / sum0;
+
+    float s10 = 0.0f * scale, s11 = 1.0f * scale, s12 = 0.0f * scale;
+    float max1 = std::max({s10, s11, s12});
+    float exp10 = std::exp(s10 - max1), exp11 = std::exp(s11 - max1), exp12 = std::exp(s12 - max1);
+    float sum1 = exp10 + exp11 + exp12;
+    float a10 = exp10 / sum1, a11 = exp11 / sum1, a12 = exp12 / sum1;
+
+    // Output[0] = a00 * V[0] + a01 * V[1] + a02 * V[2]
+    for (std::size_t d = 0; d < head_dim; ++d) {
+        float expected0 = a00 * V(0, d) + a01 * V(1, d) + a02 * V(2, d);
+        float expected1 = a10 * V(0, d) + a11 * V(1, d) + a12 * V(2, d);
+        assert(approx_equal(output(0, d), expected0, 1e-3f));
+        assert(approx_equal(output(1, d), expected1, 1e-3f));
+    }
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_causal_attention() {
+    std::cout << "Testing Causal Attention... ";
+
+    constexpr std::size_t seq_len = 4;
+    constexpr std::size_t head_dim = 8;
+
+    Tensor<float, seq_len, head_dim> Q, K, V;
+    Tensor<float, seq_len, head_dim> output;
+
+    // Initialize with simple patterns
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (auto& v : Q) v = dist(rng);
+    for (auto& v : K) v = dist(rng);
+    for (auto& v : V) v = dist(rng);
+
+    auto expr = causal_attention(Q, K, V);
+    eval(expr, output.data());
+
+    // Verify no NaN/Inf
+    for (std::size_t i = 0; i < seq_len * head_dim; ++i) {
+        assert(!std::isnan(output[i]));
+        assert(!std::isinf(output[i]));
+    }
+
+    // For causal attention, position 0 can only attend to position 0
+    // We can verify this by checking that output[0] depends only on V[0]
+    // when Q[0] has very high similarity with K[0]
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_causal_attention_mask() {
+    std::cout << "Testing Causal Attention masking... ";
+
+    constexpr std::size_t seq_len = 3;
+    constexpr std::size_t head_dim = 4;
+
+    // Set up so Q[i] dot K[j] = 1 for all i,j (uniform attention pre-mask)
+    Tensor<float, seq_len, head_dim> Q, K, V;
+    Q.fill(0.5f);
+    K.fill(0.5f);  // Q[i] dot K[j] = 4 * 0.25 = 1.0 for all pairs
+    V = {1, 1, 1, 1,   2, 2, 2, 2,   3, 3, 3, 3};  // V[i] = (i+1, i+1, i+1, i+1)
+
+    Tensor<float, seq_len, head_dim> output;
+
+    eval(causal_attention(Q, K, V), output.data());
+
+    // Position 0: can only attend to position 0 -> output[0] = V[0] = (1,1,1,1)
+    assert(approx_equal(output(0, 0), 1.0f, 1e-3f));
+    assert(approx_equal(output(0, 1), 1.0f, 1e-3f));
+
+    // Position 1: attends to positions 0 and 1 equally (after softmax)
+    // output[1] = 0.5 * V[0] + 0.5 * V[1] = 0.5 * (1,1,1,1) + 0.5 * (2,2,2,2) = (1.5,1.5,1.5,1.5)
+    assert(approx_equal(output(1, 0), 1.5f, 1e-3f));
+
+    // Position 2: attends to positions 0, 1, 2 equally
+    // output[2] = (1/3) * V[0] + (1/3) * V[1] + (1/3) * V[2] = (2,2,2,2)
+    assert(approx_equal(output(2, 0), 2.0f, 1e-3f));
+
+    std::cout << "PASSED" << std::endl;
+}
+
+void test_attention_large() {
+    std::cout << "Testing Attention (large)... ";
+
+    constexpr std::size_t seq_len = 128;
+    constexpr std::size_t head_dim = 64;
+
+    Tensor<float, seq_len, head_dim> Q, K, V;
+    Tensor<float, seq_len, head_dim> output;
+
+    // Initialize with random values
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    for (auto& v : Q) v = dist(rng);
+    for (auto& v : K) v = dist(rng);
+    for (auto& v : V) v = dist(rng);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    eval(attention(Q, K, V), output.data());
+    auto end = std::chrono::high_resolution_clock::now();
+
+    double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+    // Verify no NaN/Inf
+    bool valid = true;
+    for (std::size_t i = 0; i < seq_len * head_dim; ++i) {
+        if (std::isnan(output[i]) || std::isinf(output[i])) {
+            valid = false;
+            break;
+        }
+    }
+    assert(valid);
+
+    std::cout << "PASSED (" << time_ms << " ms)" << std::endl;
+}
+
 int main() {
     std::cout << "Kernelix v" << Version::string << " - Tests" << std::endl;
     std::cout << "=============================================" << std::endl;
@@ -760,6 +945,13 @@ int main() {
     test_softmax_numerical_stability();
     test_softmax_1d();
     test_softmax_large();
+
+    // Attention
+    test_attention();
+    test_attention_reference();
+    test_causal_attention();
+    test_causal_attention_mask();
+    test_attention_large();
 
     // API tests
     test_compute_returns_tensor();

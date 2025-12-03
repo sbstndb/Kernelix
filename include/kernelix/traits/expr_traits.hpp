@@ -6,6 +6,7 @@
 #include "../expr/unary.hpp"
 #include "../expr/binary.hpp"
 #include "../expr/norm.hpp"
+#include "../expr/attention.hpp"
 #include <array>
 #include <type_traits>
 
@@ -110,6 +111,18 @@ struct ValueTypeOf<expr::SoftmaxExpr<Input>> {
 template<typename A, typename B, typename Bias>
 struct ValueTypeOf<expr::GemmExpr<A, B, Bias>> {
     using type = typename ValueTypeOf<std::remove_cvref_t<A>>::type;
+};
+
+/// Specialization for ScaledDotProductAttentionExpr - extract from query
+template<typename Q, typename K, typename V>
+struct ValueTypeOf<expr::ScaledDotProductAttentionExpr<Q, K, V>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Q>>::type;
+};
+
+/// Specialization for CausalAttentionExpr - extract from query
+template<typename Q, typename K, typename V>
+struct ValueTypeOf<expr::CausalAttentionExpr<Q, K, V>> {
+    using type = typename ValueTypeOf<std::remove_cvref_t<Q>>::type;
 };
 
 template<typename T>
@@ -338,6 +351,60 @@ struct ExprTraits<expr::SoftmaxExpr<Input>> {
 
     static constexpr bool is_memory_bound = true;
     static constexpr bool allows_fusion = true;  // Can fuse with preceding matmul (attention)
+};
+
+/// Traits for Scaled Dot-Product Attention expression
+/// Q: [seq_len_q, head_dim], K: [seq_len_k, head_dim], V: [seq_len_k, head_dim]
+/// Output: [seq_len_q, head_dim]
+template<typename Query, typename Key, typename Value>
+struct ExprTraits<expr::ScaledDotProductAttentionExpr<Query, Key, Value>> {
+    using op_category = op_category::Contraction;
+    using value_type = value_type_t<Query>;
+
+    using query_traits = ExprTraits<std::remove_cvref_t<Query>>;
+    using key_traits = ExprTraits<std::remove_cvref_t<Key>>;
+    using value_traits = ExprTraits<std::remove_cvref_t<Value>>;
+
+    static constexpr bool is_expression = true;
+    static constexpr bool is_terminal = false;
+
+    // Extract dimensions from Q, K, V
+    static constexpr auto q_shape = query_traits::output_shape;
+    static constexpr auto k_shape = key_traits::output_shape;
+    static constexpr auto v_shape = value_traits::output_shape;
+
+    // For 2D: Q[seq_len_q, head_dim], K[seq_len_k, head_dim], V[seq_len_k, head_dim]
+    static constexpr std::size_t seq_len_q = q_shape[0];
+    static constexpr std::size_t seq_len_k = k_shape[0];
+    static constexpr std::size_t head_dim = q_shape[1];
+
+    // Output shape is [seq_len_q, head_dim]
+    static constexpr std::size_t rank = 2;
+    static constexpr std::array<std::size_t, 2> output_shape = {seq_len_q, head_dim};
+    static constexpr std::size_t output_size = seq_len_q * head_dim;
+
+    // Cost estimation:
+    // Q @ K^T: 2 * seq_len_q * seq_len_k * head_dim
+    // Softmax: 4 * seq_len_q * seq_len_k
+    // Attn @ V: 2 * seq_len_q * seq_len_k * head_dim
+    static constexpr std::size_t estimated_flops =
+        4 * seq_len_q * seq_len_k * head_dim + 4 * seq_len_q * seq_len_k;
+
+    // Memory: Q, K, V, attention scores, output
+    static constexpr std::size_t estimated_bytes =
+        (seq_len_q * head_dim + 2 * seq_len_k * head_dim +
+         seq_len_q * seq_len_k + seq_len_q * head_dim) * sizeof(value_type);
+
+    static constexpr bool is_memory_bound = false;  // Usually compute-bound
+    static constexpr bool allows_fusion = false;    // Complex operation, difficult to fuse
+};
+
+/// Traits for Causal Attention expression (same shape as standard attention)
+template<typename Query, typename Key, typename Value>
+struct ExprTraits<expr::CausalAttentionExpr<Query, Key, Value>>
+    : ExprTraits<expr::ScaledDotProductAttentionExpr<Query, Key, Value>> {
+    // Inherits everything from standard attention
+    // Causal mask doesn't change output shape or significantly change cost
 };
 
 // ============================================================================
