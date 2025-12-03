@@ -2,6 +2,7 @@
 /// @brief Comparative benchmarks: fusion vs separate, parallel vs sequential, tiled vs naive
 
 #include <kernelix/kernelix.hpp>
+#include <kernelix/kernel/gemm/fused.hpp>
 #include <benchmark/benchmark.h>
 #include <random>
 #include <cmath>
@@ -78,6 +79,117 @@ BENCHMARK(BM_GEMM_ReLU_Fused<512, 512, 512>)->Name("Fusion/GEMM+ReLU_Fused/512")
 BENCHMARK(BM_GEMM_ReLU_Separate<512, 512, 512>)->Name("Fusion/GEMM+ReLU_Separate/512")->Unit(benchmark::kMillisecond);
 
 // Note: 1024x1024 skipped - requires heap allocation or increased stack size
+
+// =============================================================================
+// KERNEL-LEVEL FUSION COMPARISON: Direct kernel calls
+// =============================================================================
+
+/// Truly fused GEMM+ReLU (activation during tile write)
+template<std::size_t M, std::size_t K, std::size_t N>
+static void BM_GEMM_ReLU_KernelFused(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K);
+    auto B = memory::make_aligned<float>(K * N);
+    auto C = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K);
+    fill_random(B.get(), K * N);
+
+    for (auto _ : state) {
+        // Truly fused: activation applied during final tile write
+        kernel::gemm_relu_impl(A.get(), B.get(), C.get(), M, N, K, K, N, N);
+        benchmark::DoNotOptimize(C.get());
+        benchmark::ClobberMemory();
+    }
+
+    const double flops = 2.0 * M * N * K + M * N;
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+}
+
+/// GEMM + separate ReLU pass
+template<std::size_t M, std::size_t K, std::size_t N>
+static void BM_GEMM_ReLU_KernelSeparate(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K);
+    auto B = memory::make_aligned<float>(K * N);
+    auto C = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K);
+    fill_random(B.get(), K * N);
+
+    for (auto _ : state) {
+        // Separate: GEMM first
+        kernel::gemm_impl(A.get(), B.get(), C.get(), M, N, K, K, N, N, false);
+        // Then separate ReLU pass (extra memory traffic)
+        for (std::size_t i = 0; i < M * N; ++i) {
+            C[i] = std::max(0.0f, C[i]);
+        }
+        benchmark::DoNotOptimize(C.get());
+        benchmark::ClobberMemory();
+    }
+
+    const double flops = 2.0 * M * N * K + M * N;
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+}
+
+/// Truly fused GEMM+SiLU (activation during tile write)
+template<std::size_t M, std::size_t K, std::size_t N>
+static void BM_GEMM_SiLU_KernelFused(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K);
+    auto B = memory::make_aligned<float>(K * N);
+    auto C = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K);
+    fill_random(B.get(), K * N);
+
+    for (auto _ : state) {
+        kernel::gemm_silu_impl(A.get(), B.get(), C.get(), M, N, K, K, N, N);
+        benchmark::DoNotOptimize(C.get());
+        benchmark::ClobberMemory();
+    }
+
+    const double flops = 2.0 * M * N * K + 4 * M * N;  // SiLU is more expensive
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+}
+
+/// GEMM + separate SiLU pass
+template<std::size_t M, std::size_t K, std::size_t N>
+static void BM_GEMM_SiLU_KernelSeparate(benchmark::State& state) {
+    auto A = memory::make_aligned<float>(M * K);
+    auto B = memory::make_aligned<float>(K * N);
+    auto C = memory::make_aligned<float>(M * N);
+
+    fill_random(A.get(), M * K);
+    fill_random(B.get(), K * N);
+
+    for (auto _ : state) {
+        kernel::gemm_impl(A.get(), B.get(), C.get(), M, N, K, K, N, N, false);
+        for (std::size_t i = 0; i < M * N; ++i) {
+            float x = C[i];
+            C[i] = x / (1.0f + std::exp(-x));  // SiLU
+        }
+        benchmark::DoNotOptimize(C.get());
+        benchmark::ClobberMemory();
+    }
+
+    const double flops = 2.0 * M * N * K + 4 * M * N;
+    state.counters["GFLOPS"] = benchmark::Counter(
+        flops, benchmark::Counter::kIsIterationInvariantRate, benchmark::Counter::kIs1000);
+}
+
+// Kernel-level fusion benchmarks (using heap allocation for larger sizes)
+BENCHMARK(BM_GEMM_ReLU_KernelFused<256, 256, 256>)->Name("KernelFusion/GEMM+ReLU_Fused/256")->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_GEMM_ReLU_KernelSeparate<256, 256, 256>)->Name("KernelFusion/GEMM+ReLU_Separate/256")->Unit(benchmark::kMicrosecond);
+
+BENCHMARK(BM_GEMM_ReLU_KernelFused<512, 512, 512>)->Name("KernelFusion/GEMM+ReLU_Fused/512")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_GEMM_ReLU_KernelSeparate<512, 512, 512>)->Name("KernelFusion/GEMM+ReLU_Separate/512")->Unit(benchmark::kMillisecond);
+
+BENCHMARK(BM_GEMM_ReLU_KernelFused<1024, 1024, 1024>)->Name("KernelFusion/GEMM+ReLU_Fused/1024")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_GEMM_ReLU_KernelSeparate<1024, 1024, 1024>)->Name("KernelFusion/GEMM+ReLU_Separate/1024")->Unit(benchmark::kMillisecond);
+
+BENCHMARK(BM_GEMM_SiLU_KernelFused<512, 512, 512>)->Name("KernelFusion/GEMM+SiLU_Fused/512")->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_GEMM_SiLU_KernelSeparate<512, 512, 512>)->Name("KernelFusion/GEMM+SiLU_Separate/512")->Unit(benchmark::kMillisecond);
 
 // =============================================================================
 // FUSION COMPARISON: RMSNorm + Linear

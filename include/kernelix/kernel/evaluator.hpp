@@ -6,6 +6,7 @@
 #include "../expr/binary.hpp"
 #include "../expr/norm.hpp"
 #include "gemm/impl.hpp"
+#include "gemm/fused.hpp"
 #include "norm/rmsnorm.hpp"
 #include "norm/layernorm.hpp"
 #include "norm/softmax.hpp"
@@ -386,10 +387,11 @@ private:
 };
 
 // ============================================================================
-// Fused GEMM + Activation Evaluator
+// Fused GEMM + Activation Evaluator (True Fusion - applies during tile write)
 // ============================================================================
 
 /// Detect and fuse GEMM + ReLU pattern
+/// Uses truly fused kernel that applies ReLU during final tile write
 template<typename A, typename B, typename Bias>
 struct Evaluator<expr::UnaryExpr<expr::GemmExpr<A, B, Bias>, expr::ReluOp>> {
     using GemmTraits = traits::ExprTraits<expr::GemmExpr<A, B, Bias>>;
@@ -404,22 +406,23 @@ struct Evaluator<expr::UnaryExpr<expr::GemmExpr<A, B, Bias>, expr::ReluOp>> {
         const T* a_data = gemm_expr.a.data();
         const T* b_data = gemm_expr.b.data();
 
-        // Execute GEMM
+        // Use truly fused GEMM+ReLU kernel (activation applied during tile write)
         if constexpr (GemmTraits::has_bias) {
+            // For bias case, do GEMM+bias then ReLU in-place
             const T* bias_data = gemm_expr.bias.data();
             gemm_bias_impl(a_data, b_data, bias_data, output, M, N, K, K, N, N);
+            parallel::parallel_for(0, M * N, [output](std::size_t i) {
+                output[i] = std::max(T{0}, output[i]);
+            });
         } else {
-            gemm_impl(a_data, b_data, output, M, N, K, K, N, N, false);
+            // Use fused kernel - no intermediate memory traffic
+            gemm_relu_impl(a_data, b_data, output, M, N, K, K, N, N);
         }
-
-        // Fused ReLU (in-place)
-        parallel::parallel_for(0, M * N, [output](std::size_t i) {
-            output[i] = std::max(T{0}, output[i]);
-        });
     }
 };
 
 /// Detect and fuse GEMM + SiLU pattern
+/// Uses truly fused kernel that applies SiLU during final tile write
 template<typename A, typename B, typename Bias>
 struct Evaluator<expr::UnaryExpr<expr::GemmExpr<A, B, Bias>, expr::SiluOp>> {
     using GemmTraits = traits::ExprTraits<expr::GemmExpr<A, B, Bias>>;
@@ -434,19 +437,53 @@ struct Evaluator<expr::UnaryExpr<expr::GemmExpr<A, B, Bias>, expr::SiluOp>> {
         const T* a_data = gemm_expr.a.data();
         const T* b_data = gemm_expr.b.data();
 
+        // Use truly fused GEMM+SiLU kernel
         if constexpr (GemmTraits::has_bias) {
             const T* bias_data = gemm_expr.bias.data();
             gemm_bias_impl(a_data, b_data, bias_data, output, M, N, K, K, N, N);
+            parallel::parallel_for(0, M * N, [output](std::size_t i) {
+                T x = output[i];
+                T sigmoid_x = T{1} / (T{1} + std::exp(-x));
+                output[i] = x * sigmoid_x;
+            });
         } else {
-            gemm_impl(a_data, b_data, output, M, N, K, K, N, N, false);
+            // Use fused kernel - no intermediate memory traffic
+            gemm_silu_impl(a_data, b_data, output, M, N, K, K, N, N);
         }
+    }
+};
 
-        // Fused SiLU (in-place)
-        parallel::parallel_for(0, M * N, [output](std::size_t i) {
-            T x = output[i];
-            T sigmoid_x = T{1} / (T{1} + std::exp(-x));
-            output[i] = x * sigmoid_x;
-        });
+/// Detect and fuse GEMM + GELU pattern
+/// Uses truly fused kernel that applies GELU during final tile write
+template<typename A, typename B, typename Bias>
+struct Evaluator<expr::UnaryExpr<expr::GemmExpr<A, B, Bias>, expr::GeluOp>> {
+    using GemmTraits = traits::ExprTraits<expr::GemmExpr<A, B, Bias>>;
+    using T = typename GemmTraits::value_type;
+
+    static void run(const expr::UnaryExpr<expr::GemmExpr<A, B, Bias>, expr::GeluOp>& e, T* output) {
+        constexpr std::size_t M = GemmTraits::M;
+        constexpr std::size_t K = GemmTraits::K;
+        constexpr std::size_t N = GemmTraits::N;
+
+        const auto& gemm_expr = e.input;
+        const T* a_data = gemm_expr.a.data();
+        const T* b_data = gemm_expr.b.data();
+
+        // Use truly fused GEMM+GELU kernel
+        if constexpr (GemmTraits::has_bias) {
+            constexpr T sqrt_2_over_pi = T{0.7978845608028654};
+            constexpr T coeff = T{0.044715};
+            const T* bias_data = gemm_expr.bias.data();
+            gemm_bias_impl(a_data, b_data, bias_data, output, M, N, K, K, N, N);
+            parallel::parallel_for(0, M * N, [output](std::size_t i) {
+                T x = output[i];
+                T inner = sqrt_2_over_pi * (x + coeff * x * x * x);
+                output[i] = T{0.5} * x * (T{1} + std::tanh(inner));
+            });
+        } else {
+            // Use fused kernel - no intermediate memory traffic
+            gemm_gelu_impl(a_data, b_data, output, M, N, K, K, N, N);
+        }
     }
 };
 
